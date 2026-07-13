@@ -39,6 +39,8 @@ if len(sys.argv) > 1 and sys.argv[1] == "--toggle":
     else:
         print("Program is not running. Please start it normally first.")
     sys.exit(0)
+elif len(sys.argv) > 1 and sys.argv[1] == "--settings":
+    pass # Allow settings dialog to open even if background process is running
 else:
     # Single instance check: Prevent opening 2 instances
     if os.path.exists(PID_FILE):
