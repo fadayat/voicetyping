@@ -1,5 +1,7 @@
 # VoiceTyping
 
+🔗 **Official Website:** [voicetyping1.vercel.app](https://voicetyping1.vercel.app)
+
 VoiceTyping is a lightweight, native cross-platform speech-to-text utility powered by **Google Gemini**. Simply press a hotkey (like `F8`) to start recording your voice, press it again to stop, and the transcribed text will be automatically copied to your clipboard so you can paste it anywhere.
 
 This repository supports both **Linux** and **Windows** environments.
