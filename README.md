@@ -25,6 +25,7 @@ When you run VoiceTyping for the first time on any system, it will prompt you fo
 - You can get a free API Key from [Google AI Studio](https://aistudio.google.com/).
 - The key is stored locally on your computer in `~/.config/voicetyping/config.json` (on Linux) or the corresponding user config path (on Windows).
 - You can change the API key at any time by right-clicking the tray icon and selecting **Settings (API Key)**.
+  - **Note for GNOME users**: If your desktop environment hides system tray icons, you can also easily change your API key at any time by running the application from the terminal with the `--settings` argument (e.g. `voicetyping --settings` or `python voicetyping.py --settings`).
 
 ---
 

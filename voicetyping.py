@@ -121,6 +121,14 @@ def get_api_key(force=False):
         
     return api_key
 
+if len(sys.argv) > 1 and sys.argv[1] == "--settings":
+    get_api_key(force=True)
+    try:
+        subprocess.run(["notify-send", "VoiceTyping", "API key updated successfully! Please restart the program if it is running."])
+    except FileNotFoundError:
+        print("API key updated successfully!")
+    sys.exit(0)
+
 API_KEY = get_api_key()
 client = genai.Client(api_key=API_KEY)
 
