@@ -24,3 +24,4 @@ pip-delete-this-directory.txt
 # Project specific
 voicetyping.pid
 config.json
+project_summary.md
