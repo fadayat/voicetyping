@@ -1,68 +1,67 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="$HOME/.local/bin/voicetyping"
+APPLICATIONS_DIR="$HOME/.local/share/applications"
+AUTOSTART_DIR="$HOME/.config/autostart"
+PYTHON_BIN="$(command -v python3)"
 
 echo "=================================================="
 echo "🚀 Welcome to VoiceTyping Installer"
 echo "=================================================="
 
-# 1. Check and install system packages
-echo "📦 Checking system packages..."
-if command -v dnf &> /dev/null; then
-    echo "Fedora/RHEL system detected. Installing packages..."
-    sudo dnf install -y wl-clipboard xclip portaudio python3-tkinter libappindicator-gtk3 libayatana-appindicator-gtk3
-elif command -v apt &> /dev/null; then
-    echo "Ubuntu/Debian system detected. Installing packages..."
-    sudo apt update
-    sudo apt install -y xclip wl-clipboard libportaudio2 python3-tk libappindicator3-1
-else
-    echo "⚠️ System type not recognized. Please install xclip, wl-clipboard, and portaudio manually."
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
+    echo "❌ VoiceTyping requires Python 3.10 or newer." >&2
+    exit 1
 fi
 
-# 2. Install Python libraries
+echo "📦 Install the required system packages if they are missing:"
+if command -v dnf >/dev/null 2>&1; then
+    echo "  Fedora: wl-clipboard xclip portaudio python3-tkinter libappindicator-gtk3 libayatana-appindicator-gtk3"
+elif command -v apt >/dev/null 2>&1; then
+    echo "  Debian/Ubuntu: xclip wl-clipboard libportaudio2 python3-tk libappindicator3-1"
+else
+    echo "  Install clipboard tools, PortAudio, and Tkinter using your distribution's package manager."
+fi
+
 echo "🐍 Installing Python libraries..."
-pip install --user google-genai sounddevice soundfile numpy pyperclip pynput pystray pillow
+"$PYTHON_BIN" -m pip install --user -r "$SCRIPT_DIR/requirements.txt"
 
-# 3. Copy files to the system
-echo "📂 Placing files into the system..."
-mkdir -p ~/.local/bin/voicetyping
-cp voicetyping.py ~/.local/bin/voicetyping/voicetyping.py
-cp setup_shortcut.py ~/.local/bin/voicetyping/setup_shortcut.py
-chmod +x ~/.local/bin/voicetyping/voicetyping.py
+echo "📂 Placing files into $INSTALL_DIR..."
+mkdir -p "$INSTALL_DIR" "$APPLICATIONS_DIR" "$AUTOSTART_DIR"
+install -m 0644 "$SCRIPT_DIR/voicetyping.py" "$INSTALL_DIR/voicetyping.py"
+install -m 0644 "$SCRIPT_DIR/voicetyping_toggle.py" "$INSTALL_DIR/voicetyping_toggle.py"
+install -m 0644 "$SCRIPT_DIR/setup_shortcut.py" "$INSTALL_DIR/setup_shortcut.py"
 
-# 4. Add to applications menu (.desktop)
-echo "🖥️ Adding to the Applications menu..."
-mkdir -p ~/.local/share/applications
-mkdir -p ~/.config/autostart
+desktop_quote() {
+    local escaped=${1//\\/\\\\}
+    escaped=${escaped//\"/\\\"}
+    escaped=${escaped//%/%%}
+    printf '"%s"' "$escaped"
+}
 
-cat > ~/.local/share/applications/voicetyping.desktop << EOL
+DESKTOP_FILE="$APPLICATIONS_DIR/voicetyping.desktop"
+DESKTOP_PYTHON_PATH="$(desktop_quote "$PYTHON_BIN")"
+DESKTOP_APP_PATH="$(desktop_quote "$INSTALL_DIR/voicetyping.py")"
+cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Version=1.0
 Name=VoiceTyping
 Comment=Speech to text converter
-Exec=python $HOME/.local/bin/voicetyping/voicetyping.py
+Exec=$DESKTOP_PYTHON_PATH $DESKTOP_APP_PATH
 Icon=audio-input-microphone
 Terminal=false
 Type=Application
 Categories=Utility;
-EOL
+EOF
+install -m 0644 "$DESKTOP_FILE" "$AUTOSTART_DIR/voicetyping.desktop"
 
-# Copy for autostart
-cp ~/.local/share/applications/voicetyping.desktop ~/.config/autostart/voicetyping.desktop
-
-# If it's already running, kill it and restart
-pkill -f voicetyping.py
-pkill -f sesle_yaz_linux.py
-
-# Remove old files if they exist to clean up
-rm -rf ~/.local/bin/sesle_yaz
-rm -f ~/.local/share/applications/sesle_yaz.desktop
-rm -f ~/.config/autostart/sesle_yaz.desktop
-
-# 5. Automatically setup F8 shortcut for GNOME
 echo "⌨️ Configuring GNOME shortcut..."
-python ~/.local/bin/voicetyping/setup_shortcut.py || true
+"$PYTHON_BIN" "$INSTALL_DIR/setup_shortcut.py" || true
 
 echo "=================================================="
-echo "✅ Installation completed successfully!"
-echo "You can now launch 'VoiceTyping' from your Applications menu."
-echo "Note: Do not forget to enter your Gemini API key in the new window."
+echo "✅ Installation completed. Launch VoiceTyping from the Applications menu."
+echo "The app stores its Gemini API key in ~/.config/voicetyping/config.json."
+echo "If VoiceTyping was already running, quit and relaunch it to load the new files."
 echo "=================================================="

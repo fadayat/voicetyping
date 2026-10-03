@@ -1,0 +1,8 @@
+google-genai>=2.17.0
+numpy>=1.24.0
+pillow>=10.0.0
+pyperclip>=1.8.2
+pynput>=1.7.6
+pystray>=0.19.4
+sounddevice>=0.4.6
+soundfile>=0.12.1
