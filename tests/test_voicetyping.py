@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,10 +16,14 @@ import voicetyping as vt
 class FakePanel:
     def __init__(self):
         self.messages = []
+        self.audio_signals = []
         self.closed = False
 
     def show(self, text, **kwargs):
         self.messages.append(text)
+
+    def feed_audio(self, rms, peak, envelope):
+        self.audio_signals.append((rms, peak, envelope))
 
     def close(self):
         self.closed = True
@@ -109,6 +114,181 @@ class AudioValidationTests(unittest.TestCase):
             vt.transcription_timeout_ms(vt.SAMPLE_RATE * vt.MAX_RECORDING_SECONDS), 180_000
         )
 
+    def test_audio_signal_is_bounded_and_keeps_quiet_speech_visible(self):
+        quiet = np.full((192, 1), 180, dtype=np.int16)
+        loud = np.full((192, 1), 32767, dtype=np.int16)
+
+        quiet_rms, quiet_peak, quiet_envelope = vt.normalize_audio_signal(quiet)
+        loud_rms, loud_peak, loud_envelope = vt.normalize_audio_signal(loud)
+
+        self.assertGreater(quiet_rms, 0.04)
+        self.assertLess(quiet_rms, loud_rms)
+        self.assertLessEqual(loud_peak, 1.0)
+        self.assertEqual(len(quiet_envelope), 12)
+        self.assertTrue(all(0.0 <= value <= 1.0 for value in loud_envelope))
+
+
+class AnimationPanelTests(unittest.TestCase):
+    class FakePipe:
+        def __init__(self):
+            self.writes = []
+            self.closed = False
+
+        def write(self, value):
+            self.writes.append(value)
+            return len(value)
+
+        def flush(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class FakeProcess:
+        def __init__(self, exit_event=None):
+            self.stdin = AnimationPanelTests.FakePipe()
+            self.stdout = AnimationPanelTests.FakePipe()
+            self.exit_event = exit_event
+            self.alive = True
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            if self.exit_event is not None and self.exit_event.is_set():
+                self.alive = False
+            return None if self.alive else 0
+
+        def wait(self, timeout=None):
+            self.alive = False
+            return 0
+
+        def terminate(self):
+            self.terminated = True
+            self.alive = False
+
+        def kill(self):
+            self.killed = True
+            self.alive = False
+
+    @staticmethod
+    def wait_for(predicate, timeout=1.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.005)
+        return predicate()
+
+    @staticmethod
+    def make_panel(state="recording"):
+        panel = vt.NotificationPanel.__new__(vt.NotificationPanel)
+        panel._audio_signals = vt.queue.Queue(maxsize=1)
+        panel._commands = vt.queue.Queue()
+        panel._panel_ready = threading.Event()
+        panel._wake = threading.Event()
+        panel._state_lock = threading.Lock()
+        panel._desired_show = None
+        panel._desired_deadline = None
+        return panel
+
+    def test_classifies_azerbaijani_status_messages(self):
+        panel = vt.NotificationPanel.__new__(vt.NotificationPanel)
+        cases = {
+            "Səs yazılır — dayandırmaq üçün F8": "recording",
+            "Mətnə çevrilir…": "transcribing",
+            "Hazırdır — Ctrl+V ilə yapışdırın": "copied",
+            "Hazırdır — başlamaq üçün F8 basın": "ready",
+            "Mikrofon əlçatan deyil": "error",
+            "API açarı qəbul edilmədi — Parametrləri yoxlayın": "error",
+            "Səs yazısı çox qısadır": "warning",
+            "Yapışdırmaq üçün hazır mətn yoxdur": "warning",
+        }
+        for message, expected in cases.items():
+            with self.subTest(message=message):
+                self.assertEqual(panel._determine_state(message), expected)
+
+    def test_show_queues_animation_without_spawning_desktop_notifications(self):
+        panel = self.make_panel()
+        panel._panel_ready.set()
+
+        with mock.patch.object(vt.subprocess, "Popen") as popen:
+            panel.show("Səs yazılır — dayandırmaq üçün F8")
+            queued = panel._commands.get_nowait()
+            self.assertEqual(queued[0], "show")
+            self.assertEqual(queued[1], "recording")
+
+            panel.show("Hazırdır — başlamaq üçün F8 basın")
+            with self.assertRaises(vt.queue.Empty):
+                panel._commands.get_nowait()
+            self.assertEqual(panel._desired_show[0], "recording")
+            popen.assert_not_called()
+
+    def test_active_states_do_not_expire_from_transient_status_timeout(self):
+        panel = self.make_panel()
+
+        panel.show("Mətnə çevrilir — zəhmət olmasa gözləyin", hide_after=1500)
+
+        self.assertEqual(panel._desired_show, ("transcribing", 1500))
+        self.assertIsNone(panel._desired_deadline)
+
+    def test_audio_queue_is_latest_only_and_stays_bounded(self):
+        panel = self.make_panel()
+        for value in (0.15, 0.45, 1.8):
+            panel.feed_audio(value, value, (value,) * 12)
+
+        self.assertEqual(panel._audio_signals.qsize(), 1)
+        self.assertEqual(panel._audio_signals.get_nowait(), (1.0, 1.0, (1.0,) * 12))
+
+    def test_overlay_initialization_failure_does_not_block_voice_typing(self):
+        with mock.patch.object(vt.subprocess, "Popen", side_effect=OSError("no display")) as popen:
+            panel = vt.NotificationPanel()
+            self.assertTrue(panel._ready.is_set())
+            self.assertFalse(panel._panel_ready.is_set())
+            panel.close()
+            self.assertFalse(panel._thread.is_alive())
+            self.assertLessEqual(popen.call_count, 2)
+
+    def test_dead_overlay_is_restarted_and_latest_state_is_replayed(self):
+        first_exit = threading.Event()
+        first = self.FakeProcess(exit_event=first_exit)
+        replacement = self.FakeProcess()
+        with mock.patch.object(
+            vt.NotificationPanel, "_spawn_overlay", side_effect=[first, replacement]
+        ) as spawn, mock.patch.object(
+            vt.NotificationPanel, "_wait_until_ready", return_value=True
+        ), mock.patch.object(
+            vt.NotificationPanel, "RETRY_INITIAL_SECONDS", 0.01
+        ), mock.patch.object(
+            vt.NotificationPanel, "RETRY_MAX_SECONDS", 0.02
+        ):
+            panel = vt.NotificationPanel()
+            panel.show("Səs yazılır — dayandırmaq üçün F8")
+            first_exit.set()
+            panel._wake.set()
+
+            self.assertTrue(self.wait_for(lambda: spawn.call_count == 2))
+            self.assertTrue(self.wait_for(lambda: bool(replacement.stdin.writes)))
+            replacement_commands = "".join(replacement.stdin.writes)
+            self.assertIn('"show", "recording", 0', replacement_commands)
+
+            calls_before_close = spawn.call_count
+            panel.close()
+            time.sleep(0.03)
+            self.assertFalse(panel._thread.is_alive())
+            self.assertFalse(replacement.alive)
+            self.assertEqual(spawn.call_count, calls_before_close)
+
+    def test_expired_transient_state_is_not_replayed(self):
+        panel = vt.NotificationPanel.__new__(vt.NotificationPanel)
+        panel._desired_show = ("copied", 3000)
+        panel._desired_deadline = 10.0
+
+        self.assertIsNone(panel._replay_command_locked(10.001))
+        self.assertIsNone(panel._desired_show)
+
+    def test_transcription_failure_is_not_reported_as_processing(self):
+        self.assertEqual(vt.NotificationPanel._determine_state("Transcription failed"), "error")
+
 
 class ConfigTests(unittest.TestCase):
     def test_save_is_private_atomic_and_preserves_other_settings(self):
@@ -148,7 +328,7 @@ class ConfigTests(unittest.TestCase):
         cleanup_handlers = []
 
         class DummyApp:
-            def __init__(self, client, panel):
+            def __init__(self, client, panel, **kwargs):
                 self.toggle_event = threading.Event()
                 self.listener = None
                 holder["app"] = self
@@ -186,6 +366,35 @@ class ConfigTests(unittest.TestCase):
 
 
 class AppStateTests(unittest.TestCase):
+    def test_microphone_callback_records_and_feeds_compact_signal_to_panel(self):
+        panel = FakePanel()
+        app = vt.VoiceTypingApp(FakeClient(), panel)
+        app.state = "recording"
+        chunk = voiced_audio(0.02)
+
+        app.microphone_callback(chunk, len(chunk), None, None)
+
+        self.assertEqual(len(app.recordings), 1)
+        self.assertEqual(len(panel.audio_signals), 1)
+        rms, peak, envelope = panel.audio_signals[0]
+        self.assertGreater(rms, 0.0)
+        self.assertGreaterEqual(peak, rms)
+        self.assertEqual(len(envelope), 12)
+
+    def test_microphone_callback_does_not_use_app_control_lock(self):
+        panel = FakePanel()
+        app = vt.VoiceTypingApp(FakeClient(), panel)
+        app.state = "recording"
+        app._lock = mock.Mock()
+        chunk = voiced_audio(0.02)
+
+        app.microphone_callback(chunk, 320, None, "overflow")
+
+        app._lock.acquire.assert_not_called()
+        self.assertEqual(len(app.recordings), 1)
+        np.testing.assert_array_equal(app.recordings[0], chunk)
+        self.assertEqual(len(panel.audio_signals), 1)
+
     def test_microphone_start_failure_returns_to_idle_and_closes_stream(self):
         panel = FakePanel()
         stream = FakeStream(fail_start=True)
@@ -193,7 +402,7 @@ class AppStateTests(unittest.TestCase):
         self.assertFalse(app.start_recording())
         self.assertEqual(app.state, "idle")
         self.assertTrue(stream.closed)
-        self.assertIn("Microphone unavailable", panel.messages)
+        self.assertIn("Mikrofon əlçatan deyil", panel.messages)
 
     def test_processing_blocks_overlapping_recording(self):
         gate = threading.Event()
@@ -258,7 +467,7 @@ class AppStateTests(unittest.TestCase):
         copy.assert_called_once_with("Salam fallback.")
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0]["model"], vt.TRANSCRIPTION_MODEL)
-        self.assertEqual(calls[1]["model"], "gemini-2.5-flash")
+        self.assertEqual(calls[1]["model"], vt.FALLBACK_MODELS[0])
         self.assertEqual(app.last_text, "Salam fallback.")
         self.assertEqual(app.state, "idle")
 
@@ -269,7 +478,7 @@ class AppStateTests(unittest.TestCase):
         with mock.patch.object(vt, "copy_to_clipboard") as copy:
             app._stop_and_transcribe(FakeStream(), [voiced_audio()])
         copy.assert_not_called()
-        self.assertIn("Audio was not understood", panel.messages)
+        self.assertIn("Danışıq başa düşülmədi — yenidən sınayın", panel.messages)
 
     def test_clipboard_failure_keeps_last_text_for_retry(self):
         panel = FakePanel()
@@ -278,7 +487,7 @@ class AppStateTests(unittest.TestCase):
         with mock.patch.object(vt, "copy_to_clipboard", side_effect=RuntimeError("clipboard")):
             app._stop_and_transcribe(FakeStream(), [voiced_audio()])
         self.assertEqual(app.last_text, "kept text")
-        self.assertTrue(any("kept in memory" in message for message in panel.messages))
+        self.assertTrue(any("mətn yadda saxlanıldı" in message for message in panel.messages))
 
     def test_shutdown_closes_active_resources(self):
         panel = FakePanel()

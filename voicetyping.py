@@ -26,6 +26,8 @@ import soundfile as sf
 from google import genai
 from google.genai import types
 
+from live_transcription import LiveTranscriber
+
 
 APP_NAME = "VoiceTyping"
 SAMPLE_RATE = 16_000
@@ -35,8 +37,18 @@ MAX_RECORDING_SECONDS = 7 * 60
 SILENCE_PEAK_THRESHOLD = 64
 REQUEST_TIMEOUT_MS = 60_000
 TRANSCRIPTION_MODEL = "gemini-3.5-transcribe"
-FALLBACK_MODELS = ("gemini-2.5-flash", "gemini-3.5-flash")
+FALLBACK_MODELS = (
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-flash-latest",
+)
 TOGGLE_DEBOUNCE_SECONDS = 0.3
+LIVE_FINALIZE_TIMEOUT_SECONDS = 3.0
+LIVE_FAILURE_COOLDOWN_SECONDS = 60.0
 
 CONFIG_DIR = Path.home() / ".config" / "voicetyping"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -221,272 +233,330 @@ def create_client(api_key: str):
     )
 
 
+def create_live_transcriber(api_key: str):
+    language_codes = load_config().get("language_codes", ["az-AZ"])
+    if not isinstance(language_codes, list) or not all(
+        isinstance(code, str) and code for code in language_codes
+    ):
+        language_codes = ["az-AZ"]
+    return LiveTranscriber(api_key, language_codes=language_codes)
+
+
 def transcription_timeout_ms(sample_count: int) -> int:
     audio_seconds = sample_count / SAMPLE_RATE
     return min(180_000, REQUEST_TIMEOUT_MS + int(audio_seconds * 250))
 
 
+def normalize_audio_signal(indata, bins: int = 12) -> tuple[float, float, tuple[float, ...]]:
+    """Return a small, perceptually compressed microphone snapshot.
+
+    At most 192 samples are inspected so the sounddevice callback has predictable
+    work regardless of the device block size.  Log compression keeps quiet speech
+    visible while bounding every value to the range expected by the renderer.
+    """
+    samples = np.asarray(indata)
+    if samples.size == 0 or bins <= 0:
+        return 0.0, 0.0, tuple(0.0 for _ in range(max(0, bins)))
+    flat = samples.reshape(-1)
+    stride = max(1, flat.size // 192)
+    magnitudes = np.abs(flat[::stride].astype(np.float32)) / 32768.0
+    magnitudes = np.clip(magnitudes, 0.0, 1.0)
+
+    def compress(value: float) -> float:
+        return min(1.0, max(0.0, math.log1p(32.0 * value) / math.log(33.0)))
+
+    rms = compress(float(np.sqrt(np.mean(magnitudes * magnitudes))))
+    peak = compress(float(np.max(magnitudes, initial=0.0)))
+    edges = np.linspace(0, len(magnitudes), bins + 1, dtype=int)
+    envelope = []
+    for index in range(bins):
+        segment = magnitudes[edges[index]:edges[index + 1]]
+        value = float(np.sqrt(np.mean(segment * segment))) if segment.size else 0.0
+        envelope.append(compress(value))
+    return rms, peak, tuple(envelope)
+
+
 class NotificationPanel:
-    """Modern animated floating island overlay with dynamic voice waveforms and AI status."""
+    """Send status and bounded audio levels to the isolated transparent overlay."""
+
+    RETRY_INITIAL_SECONDS = 0.25
+    RETRY_MAX_SECONDS = 2.0
+    READY_TIMEOUT_SECONDS = 3.0
+    FAILURE_LOG_INTERVAL_SECONDS = 30.0
 
     def __init__(self):
-        self.root: tk.Tk | None = None
-        self.canvas: tk.Canvas | None = None
-        self.label: tk.Label | None = None  # Preserved for backward compatibility
         self._commands: queue.Queue[tuple] = queue.Queue()
-        self._hide_job = None
+        self._audio_signals: queue.Queue[tuple] = queue.Queue(maxsize=1)
         self._ready = threading.Event()
-        self._is_running = True
-        self._is_visible = False
-
-        # Visual layout dimensions (compact pure-animation island)
-        self.width = 190
-        self.height = 44
-        self.radius = 22
-
-        # Dynamic state & animation tracking
-        self.state = "idle"
-        self.display_text = "Ready — Press F8"
-        self.record_start_time = 0.0
-        self.state_start_time = time.monotonic()
-        self.bg_color = "#181825"
-        self.text_color = "#cdd6f4"
-
-        self._thread = threading.Thread(target=self._create_panel, daemon=True, name="status-panel")
+        self._panel_ready = threading.Event()
+        self._closing = threading.Event()
+        self._wake = threading.Event()
+        self._state_lock = threading.Lock()
+        self._process_lock = threading.Lock()
+        self._process = None
+        self._desired_show: tuple[str, int] | None = None
+        self._desired_deadline: float | None = None
+        self._last_failure_log = 0.0
+        self._suppressed_failures = 0
+        self._thread = threading.Thread(target=self._run_overlay, daemon=True, name="voice-animation")
         self._thread.start()
-        self._ready.wait(timeout=3)
+        if not self._ready.wait(timeout=4):
+            print("Voice animation initialization timed out.")
 
-    def _create_panel(self) -> None:
+    def _spawn_overlay(self):
+        environment = os.environ.copy()
+        # Gtk positioning and click-through work through XWayland on GNOME.
+        if environment.get("DISPLAY"):
+            environment["GDK_BACKEND"] = "x11"
+        return subprocess.Popen(
+            [sys.executable, str(Path(__file__).with_name("voice_overlay.py"))],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            text=True, bufsize=1, env=environment,
+        )
+
+    def _wait_until_ready(self, process) -> bool:
+        import selectors
+
+        deadline = time.monotonic() + self.READY_TIMEOUT_SECONDS
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while not self._closing.is_set() and process.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                if selector.select(timeout=min(0.1, remaining)):
+                    return process.stdout.readline().strip() == "ready"
+        return False
+
+    @staticmethod
+    def _close_streams(process) -> None:
+        for stream in (process.stdin, process.stdout):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _stop_overlay(process) -> None:
+        if process.poll() is None:
+            try:
+                process.stdin.write('["close"]\n')
+                process.stdin.flush()
+                process.wait(timeout=0.7)
+            except (AttributeError, BrokenPipeError, OSError, subprocess.TimeoutExpired):
+                try:
+                    process.terminate()
+                    process.wait(timeout=0.4)
+                except (OSError, subprocess.TimeoutExpired):
+                    try:
+                        process.kill()
+                        process.wait(timeout=0.3)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+        NotificationPanel._close_streams(process)
+
+    def _log_failure(self, error: Exception) -> None:
+        now = time.monotonic()
+        if self._last_failure_log == 0.0 or now - self._last_failure_log >= self.FAILURE_LOG_INTERVAL_SECONDS:
+            suffix = f"; {self._suppressed_failures} retries suppressed" if self._suppressed_failures else ""
+            print(f"Voice animation unavailable ({type(error).__name__}{suffix}).")
+            self._last_failure_log = now
+            self._suppressed_failures = 0
+        else:
+            self._suppressed_failures += 1
+
+    def _clear_commands(self) -> None:
         try:
-            self.root = tk.Tk()
-            self.root.overrideredirect(True)
-            self.root.attributes("-topmost", True)
-            self.root.attributes("-alpha", 0.96)
-            self.root.configure(bg="#0f0f17")
+            while True:
+                self._commands.get_nowait()
+        except queue.Empty:
+            pass
 
-            self.canvas = tk.Canvas(
-                self.root,
-                width=self.width,
-                height=self.height,
-                bg="#0f0f17",
-                highlightthickness=0,
-            )
-            self.canvas.pack()
+    def _replay_command_locked(self, now: float) -> tuple | None:
+        if self._desired_show is None:
+            return None
+        state, original_hide_ms = self._desired_show
+        if self._desired_deadline is None:
+            return ("show", state, original_hide_ms)
+        remaining_ms = int((self._desired_deadline - now) * 1000)
+        if remaining_ms <= 0:
+            self._desired_show = None
+            self._desired_deadline = None
+            return None
+        return ("show", state, remaining_ms)
 
-            screen_width = self.root.winfo_screenwidth()
-            x_right = screen_width - self.width - 24
-            self.root.geometry(f"{self.width}x{self.height}+{x_right}+18")
-            self.root.withdraw()
-            self._is_visible = False
+    def _run_overlay(self) -> None:
+        retry_delay = self.RETRY_INITIAL_SECONDS
+        try:
+            while not self._closing.is_set():
+                process = None
+                started_at = None
+                try:
+                    process = self._spawn_overlay()
+                    with self._process_lock:
+                        self._process = process
+                    if not self._wait_until_ready(process):
+                        if self._closing.is_set():
+                            break
+                        raise RuntimeError("The transparent animation did not start")
 
-            self.root.after(30, self._drain_commands)
-            self.root.after(30, self._render_loop)
+                    started_at = time.monotonic()
+                    with self._state_lock:
+                        # Commands for a dead child are stale. The desired state below
+                        # is the single source of truth across process restarts.
+                        self._clear_commands()
+                        replay = self._replay_command_locked(started_at)
+                        if replay is not None:
+                            self._commands.put(replay)
+                        self._panel_ready.set()
+                    self._ready.set()
+                    self._wake.set()
+
+                    while not self._closing.is_set() and process.poll() is None:
+                        self._wake.wait(timeout=0.1)
+                        self._wake.clear()
+                        commands = []
+                        try:
+                            while True:
+                                commands.append(self._commands.get_nowait())
+                        except queue.Empty:
+                            pass
+                        try:
+                            rms, peak, envelope = self._audio_signals.get_nowait()
+                            commands.append(("audio", rms, peak, envelope))
+                        except queue.Empty:
+                            pass
+                        if commands:
+                            process.stdin.write("".join(json.dumps(command) + "\n" for command in commands))
+                            process.stdin.flush()
+
+                    if not self._closing.is_set():
+                        raise RuntimeError("The transparent animation stopped")
+                except Exception as error:
+                    if not self._closing.is_set():
+                        self._log_failure(error)
+                finally:
+                    with self._state_lock:
+                        self._panel_ready.clear()
+                    self._ready.set()
+                    if process is not None:
+                        self._stop_overlay(process)
+                    with self._process_lock:
+                        if self._process is process:
+                            self._process = None
+
+                if self._closing.is_set():
+                    break
+                if started_at is not None and time.monotonic() - started_at >= 5.0:
+                    retry_delay = self.RETRY_INITIAL_SECONDS
+                if self._closing.wait(retry_delay):
+                    break
+                retry_delay = min(self.RETRY_MAX_SECONDS, retry_delay * 2)
+        finally:
+            self._panel_ready.clear()
             self._ready.set()
-            self.root.mainloop()
-        except tk.TclError as error:
-            print(f"Status panel unavailable ({type(error).__name__}).")
-            self.root = None
-            self._ready.set()
 
-    def _draw_capsule(self, x1, y1, x2, y2, r, **kwargs):
-        points = [
-            x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
-            x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
-            x1, y2, x1, y2 - r, x1, y1 + r, x1, y1
-        ]
-        return self.canvas.create_polygon(points, smooth=True, **kwargs)
-
-    def _determine_state(self, text: str) -> str:
+    @staticmethod
+    def _determine_state(text: str) -> str:
         low = text.lower()
-        if "recording" in low or "qeyd" in low:
+        if any(word in low for word in (
+            "unavailable", "əlçatan deyil", "error", "xəta", "failed", "rejected",
+            "uğursuz", "imtina", "qəbul edilmədi", "alınmadı", "vaxt bitdi",
+        )):
+            return "error"
+        if any(word in low for word in (
+            "no audio", "səs yazılmadı", "too short", "qısadır", "silence", "səssiz",
+            "not understood", "başa düşülmədi", "mövcud deyil", "hazır mətn yoxdur",
+            "çatdı", "hədd", "sorğu limiti",
+        )):
+            return "warning"
+        if "recording" in low or "qeyd" in low or "yazılır" in low:
             return "recording"
-        if "transcrib" in low or "çevrilir" in low or "gözləyin" in low:
+        if "transcrib" in low or "çevril" in low or "gözləyin" in low or "wait for" in low:
             return "transcribing"
-        if "copi" in low or "kopyalandı" in low:
+        if "copi" in low or "kopyalandı" in low or "yapışdırın" in low:
             return "copied"
         if "ready" in low or "hazır" in low:
             return "ready"
-        if any(w in low for w in ("unavailable", "tapılmadı", "error", "xəta", "failed", "rejected")):
-            return "error"
-        if any(w in low for w in ("no audio", "səs yazılmadı", "too short", "qısadır", "silence", "səssiz", "not understood")):
-            return "warning"
         return "info"
 
-    def _drain_commands(self) -> None:
-        if self.root is None:
-            return
+    def feed_audio(self, rms: float, peak: float, envelope: tuple[float, ...]) -> None:
+        """Latest-only telemetry; the real-time microphone callback never waits."""
+        snapshot = (
+            max(0.0, min(1.0, float(rms))),
+            max(0.0, min(1.0, float(peak))),
+            tuple(max(0.0, min(1.0, float(value))) for value in envelope[:12]),
+        )
         try:
-            while True:
-                command = self._commands.get_nowait()
-                action = command[0]
-                if action == "show":
-                    _, text, color, bg_color, hide_after = command
-                    if self._hide_job is not None:
-                        self.root.after_cancel(self._hide_job)
-                        self._hide_job = None
-
-                    old_state = self.state
-                    self.state = self._determine_state(text)
-                    self.display_text = text
-                    self.text_color = color
-                    self.bg_color = bg_color
-                    self.state_start_time = time.monotonic()
-                    if self.state == "recording" and old_state != "recording":
-                        self.record_start_time = time.monotonic()
-
-                    self._is_visible = True
-                    self.root.deiconify()
-                    if hide_after > 0:
-                        self._hide_job = self.root.after(hide_after, self._auto_hide)
-                elif action == "hide":
-                    self._auto_hide()
-                elif action == "close":
-                    self._is_running = False
-                    if self._hide_job is not None:
-                        self.root.after_cancel(self._hide_job)
-                        self._hide_job = None
-                    self.root.destroy()
-                    return
-        except queue.Empty:
-            pass
-        except tk.TclError:
-            return
-        self.root.after(30, self._drain_commands)
-
-    def _auto_hide(self) -> None:
-        if self._hide_job is not None:
-            self.root.after_cancel(self._hide_job)
-            self._hide_job = None
-        self._is_visible = False
-        if self.root is not None:
-            self.root.withdraw()
-
-    def _render_loop(self) -> None:
-        if not self._is_running or self.root is None:
-            return
-        if self._is_visible:
-            self._render_frame()
-            self.root.after(20, self._render_loop)  # ~50 FPS smooth animation when visible
-        else:
-            self.root.after(200, self._render_loop)  # Zero CPU idle polling when hidden
-
-    def _render_frame(self) -> None:
-        if self.canvas is None:
-            return
-        t = time.monotonic()
-        dt = t - self.state_start_time
-        self.canvas.delete("all")
-
-        # 1. Dynamic border and container background based on state
-        border_color = "#2a2b3d"
-        fill_color = "#181825"
-        if self.state == "recording":
-            glow = (math.sin(t * 5.0) + 1.0) / 2.0
-            r_val = int(243 * 0.7 + (243 * 0.3) * glow)
-            g_val = int(139 * 0.4 + (139 * 0.2) * glow)
-            b_val = int(168 * 0.4 + (168 * 0.2) * glow)
-            border_color = f"#{r_val:02x}{g_val:02x}{b_val:02x}"
-            fill_color = "#1e1622"
-        elif self.state == "transcribing":
-            glow = (math.sin(t * 4.0) + 1.0) / 2.0
-            r_val = int(137 * 0.6 + 50 * glow)
-            g_val = int(180 * 0.6 + 60 * glow)
-            b_val = int(250 * 0.6 + 5 * glow)
-            border_color = f"#{r_val:02x}{g_val:02x}{b_val:02x}"
-            fill_color = "#161b26"
-        elif self.state == "copied":
-            border_color = "#a6e3a1"
-            fill_color = "#15241b"
-        elif self.state in ("warning", "error"):
-            border_color = "#f38ba8" if self.state == "error" else "#fab387"
-            fill_color = "#24181c"
-
-        # Outer capsule container
-        self._draw_capsule(2, 2, self.width - 2, self.height - 2, self.radius, fill=fill_color, outline=border_color, width=1.5)
-
-        cy = self.height // 2
-
-        if self.state == "recording":
-            # 1. Left: Glowing Pulsing Neon Red Record Dot
-            orb_x = 24
-            pulse = (math.sin(t * 6.0) + 1.0) / 2.0
-            r_outer = 8 + int(4 * pulse)
-            self.canvas.create_oval(orb_x - r_outer, cy - r_outer, orb_x + r_outer, cy + r_outer, outline="#f38ba8", width=1)
-            self.canvas.create_oval(orb_x - 4.5, cy - 4.5, orb_x + 4.5, cy + 4.5, fill="#ff4d6d", outline="")
-
-            # 2. Continuous fluid Siri-style waves (3 multi-frequency spline curves)
-            wave_x1 = 44
-            wave_x2 = self.width - 16
-            wave_w = wave_x2 - wave_x1
-            steps = 28
-
-            wave_configs = [
-                {"freq": 3.0, "speed": 6.5, "amp": 12.0, "phase": 0.0, "color": "#89dceb", "width": 2.2},
-                {"freq": 2.5, "speed": -5.5, "amp": 10.0, "phase": 1.4, "color": "#cba6f7", "width": 2.0},
-                {"freq": 3.5, "speed": 7.5, "amp": 8.5, "phase": 2.8, "color": "#f38ba8", "width": 1.8},
-            ]
-
-            for cfg in wave_configs:
-                pts = []
-                for i in range(steps + 1):
-                    norm_x = i / steps
-                    px = wave_x1 + norm_x * wave_w
-                    envelope = math.sin(norm_x * math.pi) ** 1.5
-                    wy = cy + math.sin(norm_x * cfg["freq"] * math.pi * 2 + t * cfg["speed"] + cfg["phase"]) * cfg["amp"] * envelope
-                    pts.extend([px, wy])
-                self.canvas.create_line(pts, smooth=True, fill=cfg["color"], width=cfg["width"], capstyle="round")
-
-        elif self.state == "transcribing":
-            # 5 AI glowing dots undulating in a smooth harmonic wave
-            dot_count = 5
-            spacing = 18
-            start_x = (self.width - (dot_count - 1) * spacing) // 2
-            colors = ["#89dceb", "#89b4fa", "#cba6f7", "#f5c2e7", "#fab387"]
-            for i in range(dot_count):
-                dx = start_x + i * spacing
-                dy = cy + math.sin(t * 8.0 + i * 1.1) * 7.0
-                r = 3.8 + 1.0 * math.cos(t * 8.0 + i * 1.1)
-                self.canvas.create_oval(dx - r, dy - r, dx + r, dy + r, fill=colors[i], outline="")
-
-        elif self.state == "copied":
-            # Spring bounce checkmark in emerald green circle
-            anim_t = min(1.0, dt / 0.3)
-            scale = 1.0 + 0.25 * math.sin(anim_t * math.pi) if anim_t < 1.0 else 1.0
-            r_pop = 13 * scale
-            chk_x = self.width // 2
-            self.canvas.create_oval(chk_x - r_pop, cy - r_pop, chk_x + r_pop, cy + r_pop, fill="#a6e3a1", outline="")
-            self.canvas.create_text(chk_x, cy, text="✓", fill="#0f0f17", font=("sans-serif", 13, "bold"))
-
-        elif self.state == "ready":
-            # Centered soft breathing green dot
-            dot_x = self.width // 2
-            pulse = (math.sin(t * 3.5) + 1.0) / 2.0
-            r_glow = 7 + int(4 * pulse)
-            self.canvas.create_oval(dot_x - r_glow, cy - r_glow, dot_x + r_glow, cy + r_glow, outline="#a6e3a1", width=1)
-            self.canvas.create_oval(dot_x - 4, cy - 4, dot_x + 4, cy + 4, fill="#a6e3a1", outline="")
-
-        else:  # warning or error
-            icon = "⚠" if self.state == "warning" else "✕"
-            color = "#fab387" if self.state == "warning" else "#f38ba8"
-            self.canvas.create_text(self.width // 2, cy, text=icon, fill=color, font=("sans-serif", 16, "bold"))
+            self._audio_signals.put_nowait(snapshot)
+        except queue.Full:
+            try:
+                self._audio_signals.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._audio_signals.put_nowait(snapshot)
+            except queue.Full:
+                pass
+        self._wake.set()
 
     def show(
-        self,
-        text: str,
-        color: str = "#cdd6f4",
-        bg_color: str = "#1e1e2e",
-        hide_after: int = 0,
+        self, text: str, color: str = "", bg_color: str = "", hide_after: int = 0,
     ) -> None:
-        if self.root is not None:
-            self._commands.put(("show", text, color, bg_color, hide_after))
+        state = self._determine_state(text)
+        now = time.monotonic()
+        effective_hide_ms = hide_after
+        if state in ("recording", "transcribing"):
+            effective_hide_ms = 0
+        elif state == "copied":
+            effective_hide_ms = 300
+        elif state == "ready":
+            effective_hide_ms = 850
+        with self._state_lock:
+            if (
+                state == "ready"
+                and self._desired_show is not None
+                and self._desired_show[0] in ("recording", "transcribing")
+            ):
+                return
+            self._desired_show = (state, hide_after)
+            self._desired_deadline = now + effective_hide_ms / 1000 if effective_hide_ms > 0 else None
+            if self._panel_ready.is_set():
+                self._commands.put(("show", state, hide_after))
+        self._wake.set()
 
     def hide(self) -> None:
-        if self.root is not None:
-            self._commands.put(("hide",))
+        with self._state_lock:
+            self._desired_show = None
+            self._desired_deadline = None
+            if self._panel_ready.is_set():
+                self._commands.put(("hide",))
+        self._wake.set()
 
     def close(self) -> None:
-        if self.root is not None:
-            self._commands.put(("close",))
+        self._closing.set()
+        self._wake.set()
+        if threading.current_thread() is not self._thread:
+            self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                with self._process_lock:
+                    process = self._process
+                if process is not None and process.poll() is None:
+                    try:
+                        process.terminate()
+                    except OSError:
+                        pass
+                self._thread.join(timeout=0.5)
+            if self._thread.is_alive():
+                with self._process_lock:
+                    process = self._process
+                if process is not None and process.poll() is None:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                self._thread.join(timeout=0.4)
 
 
 def validate_audio(chunks: list[np.ndarray]) -> tuple[np.ndarray | None, str | None]:
@@ -527,15 +597,15 @@ def copy_to_clipboard(text: str, attempts: int = 2) -> None:
 def friendly_api_error(error: Exception) -> str:
     code = getattr(error, "code", None)
     if code in (401, 403):
-        return "API key rejected — open Settings"
+        return "API açarı qəbul edilmədi — Parametrləri yoxlayın"
     if code == 429:
-        return "Gemini rate limit reached — try later"
+        return "Sorğu limiti dolub — bir az sonra yenidən sınayın"
     if code and code >= 500:
-        return "Gemini is temporarily unavailable"
+        return "Transkripsiya xidməti müvəqqəti əlçatan deyil"
     name = type(error).__name__.lower()
     if "timeout" in name:
-        return "Transcription timed out — try again"
-    return "Transcription failed — check network/settings"
+        return "Vaxt bitdi — yenidən sınayın"
+    return "Transkripsiya alınmadı — interneti və parametrləri yoxlayın"
 
 
 def extract_transcription_text(response) -> str:
@@ -560,6 +630,49 @@ def extract_transcription_text(response) -> str:
     return result
 
 
+class _CaptureContext:
+    """Audio owned by exactly one recording stream.
+
+    SoundDevice serializes callbacks for a stream, and ``stream.stop()`` is
+    the boundary that waits for the active callback.  The worker snapshots
+    this context only after that boundary, so the callback needs no app-wide
+    control lock and the last in-flight chunk cannot be lost.
+    """
+
+    def __init__(self, live_session, max_frames: int):
+        self.live_session = live_session
+        self.max_frames = max(1, max_frames)
+        self.chunks: list[np.ndarray] = []
+        self.frames = 0
+        self.sealed = False
+        self.live_failed = False
+
+    def capture(self, indata) -> np.ndarray | None:
+        if self.sealed:
+            return None
+        remaining = self.max_frames - self.frames
+        if remaining <= 0:
+            return None
+        chunk = indata[:remaining].copy()
+        if len(chunk) == 0:
+            return None
+        self.frames += len(chunk)
+        self.chunks.append(chunk)
+        if self.live_session is not None and not self.live_failed:
+            try:
+                if not self.live_session.feed_audio(
+                    chunk.astype("<i2", copy=False).tobytes()
+                ):
+                    self.live_failed = True
+            except Exception:
+                self.live_failed = True
+        return chunk
+
+    def seal_and_snapshot(self) -> list[np.ndarray]:
+        self.sealed = True
+        return list(self.chunks)
+
+
 class VoiceTypingApp:
     def __init__(
         self,
@@ -567,6 +680,8 @@ class VoiceTypingApp:
         panel,
         stream_factory: Callable = sd.InputStream,
         max_recording_seconds: float = MAX_RECORDING_SECONDS,
+        live_factory: Callable | None = None,
+        paste_action: Callable | None = None,
     ):
         self.client = client
         self.panel = panel
@@ -582,13 +697,44 @@ class VoiceTypingApp:
         self._last_toggle = 0.0
         self._lock = threading.RLock()
         self._shutdown = threading.Event()
+        self._live_factory = live_factory
+        self._paste_action = paste_action
+        self._live_session = None
+        self._processing_live = None
+        self._capture_context: _CaptureContext | None = None
+        self._live_disabled_until = 0.0
+        self.last_timing: dict = {}
 
     def microphone_callback(self, indata, frames, time_info, status) -> None:
-        if status:
-            print("Microphone reported an input warning.")
-        with self._lock:
-            if self.state == "recording":
-                self.recordings.append(indata.copy())
+        """Compatibility entry point used by tests and direct callers."""
+        context = self._capture_context
+        if context is not None:
+            self._capture_microphone(context, indata)
+            return
+        # Older direct callers may set state/recordings without constructing a
+        # stream.  This path also avoids the app control lock and therefore
+        # retains audio while another thread is changing unrelated state.
+        if self.state in ("starting", "recording"):
+            chunk = indata.copy()
+            self.recordings.append(chunk)
+            if self._live_session is not None:
+                try:
+                    self._live_session.feed_audio(
+                        chunk.astype("<i2", copy=False).tobytes()
+                    )
+                except Exception:
+                    pass
+            signal_sink = getattr(self.panel, "feed_audio", None)
+            if callable(signal_sink):
+                signal_sink(*normalize_audio_signal(indata))
+
+    def _capture_microphone(self, context: _CaptureContext, indata) -> None:
+        chunk = context.capture(indata)
+        if chunk is None:
+            return
+        signal_sink = getattr(self.panel, "feed_audio", None)
+        if callable(signal_sink):
+            signal_sink(*normalize_audio_signal(chunk))
 
     def toggle(self) -> bool:
         with self._lock:
@@ -602,7 +748,7 @@ class VoiceTypingApp:
         if state == "recording":
             return self.request_stop()
         if state == "processing":
-            self.panel.show("Still transcribing…", color="#f9e2af", bg_color="#2d2a20", hide_after=1500)
+            self.panel.show("Mətnə çevrilir — zəhmət olmasa gözləyin", color="#f9e2af", bg_color="#2d2a20", hide_after=1500)
         return False
 
     def start_recording(self) -> bool:
@@ -611,21 +757,54 @@ class VoiceTypingApp:
                 return False
             self.state = "starting"
             self.recordings = []
+            use_live = self._live_factory is not None and time.monotonic() >= self._live_disabled_until
+        live_session = None
+        if use_live:
+            try:
+                live_session = self._live_factory()
+                live_session.start()
+            except Exception as error:
+                if live_session is not None:
+                    live_session.cancel()
+                live_session = None
+                self._live_disabled_until = time.monotonic() + LIVE_FAILURE_COOLDOWN_SECONDS
+                print(f"Live transcription setup failed ({type(error).__name__}); using batch.")
+        with self._lock:
+            if self._shutdown.is_set():
+                if live_session is not None:
+                    live_session.cancel()
+                return False
+            capture = _CaptureContext(
+                live_session,
+                max_frames=int(self.max_recording_seconds * SAMPLE_RATE),
+            )
+            self._capture_context = capture
+            self.recordings = capture.chunks
+            self._live_session = live_session
         new_stream = None
         try:
             new_stream = self.stream_factory(
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype="int16",
-                callback=self.microphone_callback,
+                callback=lambda indata, frames, time_info, status: self._capture_microphone(
+                    capture, indata
+                ),
             )
             new_stream.start()
         except Exception as error:
             self._close_stream(new_stream)
+            if live_session is not None:
+                live_session.cancel()
             with self._lock:
-                self.state = "idle"
+                if self._capture_context is capture:
+                    self._capture_context = None
+                self.recordings = []
+                self._live_session = None
+                if not self._shutdown.is_set():
+                    self.state = "idle"
             print(f"Could not open microphone ({type(error).__name__}).")
-            self.panel.show("Microphone unavailable", color="#f38ba8", bg_color="#302020", hide_after=3000)
+            self.panel.show("Mikrofon əlçatan deyil", color="#f38ba8", bg_color="#302020", hide_after=3000)
             return False
 
         with self._lock:
@@ -641,13 +820,15 @@ class VoiceTypingApp:
                 self.duration_timer.start()
         if close_immediately:
             self._close_stream(new_stream)
+            if live_session is not None:
+                live_session.cancel()
             return False
-        self.panel.show("Recording…  (F8 — Stop)", color="#f38ba8", bg_color="#302030")
+        self.panel.show("Səs yazılır — dayandırmaq üçün F8", color="#f38ba8", bg_color="#302030")
         print("Recording started. Press F8 to stop.")
         return True
 
     def _duration_limit_reached(self) -> None:
-        self.panel.show("Maximum recording length reached", color="#fab387", bg_color="#2d2520")
+        self.panel.show("Yazı vaxt həddinə çatdı — dayandırılır", color="#fab387", bg_color="#2d2520")
         self.request_stop()
 
     def request_stop(self) -> bool:
@@ -659,17 +840,25 @@ class VoiceTypingApp:
             self.stream = None
             timer = self.duration_timer
             self.duration_timer = None
-            chunks = self.recordings
+            capture = self._capture_context
+            self._capture_context = None
+            chunks = capture if capture is not None else self.recordings
             self.recordings = []
+            live_session = (
+                capture.live_session if capture is not None else self._live_session
+            )
+            self._live_session = None
+            self._processing_live = live_session
+            stopped_at = time.monotonic()
             if timer:
                 timer.cancel()
             self.worker = threading.Thread(
                 target=self._stop_and_transcribe,
-                args=(stream, chunks),
+                args=(stream, chunks, live_session, stopped_at),
                 daemon=True,
                 name="transcription-worker",
             )
-            self.panel.show("Transcribing…", color="#f9e2af", bg_color="#2d2a20")
+            self.panel.show("Mətnə çevrilir…", color="#f9e2af", bg_color="#2d2a20")
             self.worker.start()
         return True
 
@@ -686,92 +875,178 @@ class VoiceTypingApp:
         except Exception:
             pass
 
-    def _stop_and_transcribe(self, stream, chunks: list[np.ndarray]) -> None:
+    def _batch_transcribe(self, audio_data: np.ndarray) -> str:
+        audio_part = types.Part.from_bytes(data=encode_wav(audio_data), mime_type="audio/wav")
+        timeout_ms = transcription_timeout_ms(len(audio_data))
+        last_error = None
+        for model_name in (TRANSCRIPTION_MODEL, *FALLBACK_MODELS):
+            if self._shutdown.is_set():
+                return ""
+            try:
+                if model_name == TRANSCRIPTION_MODEL:
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents=[audio_part],
+                        config=types.GenerateContentConfig(
+                            audio_transcription_config=types.AudioTranscriptionConfig(language_codes=[]),
+                            http_options=types.HttpOptions(timeout=timeout_ms),
+                        ),
+                    )
+                else:
+                    prompt = (
+                        "Accurately transcribe the spoken audio verbatim. "
+                        "Return ONLY the transcribed speech. Do not add commentary, "
+                        "conversational replies, explanations, formatting, or quotation marks. "
+                        "If no speech is heard, return nothing."
+                    )
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents=[prompt, audio_part],
+                        config=types.GenerateContentConfig(
+                            temperature=0.0,
+                            http_options=types.HttpOptions(timeout=timeout_ms),
+                        ),
+                    )
+                if response is not None:
+                    return extract_transcription_text(response)
+            except Exception as error:
+                last_error = error
+                code = getattr(error, "code", None)
+                print(f"Model {model_name} failed ({type(error).__name__}, status={code}).")
+                # Retry another model only for model-specific availability/quotas.
+                if code in (401, 403):
+                    raise
+                if code not in (429, 404, 500, 502, 503, 504):
+                    description = str(error).lower()
+                    if "quota" not in description and "resource_exhausted" not in description:
+                        raise
+        if last_error is not None:
+            raise last_error
+        return ""
+
+    def _stop_and_transcribe(
+        self,
+        stream,
+        chunks: list[np.ndarray] | _CaptureContext,
+        live_session=None,
+        stopped_at: float | None = None,
+    ) -> None:
+        stopped_at = stopped_at if stopped_at is not None else time.monotonic()
+        route = "batch"
         try:
             self._close_stream(stream)
+            live_failed = False
+            if isinstance(chunks, _CaptureContext):
+                live_failed = chunks.live_failed
+                chunks = chunks.seal_and_snapshot()
+            if live_session is not None and live_failed:
+                live_session.cancel()
+                with self._lock:
+                    self._live_disabled_until = (
+                        time.monotonic() + LIVE_FAILURE_COOLDOWN_SECONDS
+                    )
+                print(
+                    "Live audio streaming failed; using the full recording "
+                    "with batch fallback."
+                )
             audio_data, reason = validate_audio(chunks)
+            if self._shutdown.is_set():
+                return
             if reason:
                 messages = {
-                    "empty": "No audio was recorded",
-                    "too_short": "Recording was too short",
-                    "silence": "Only silence was detected",
-                    "invalid": "Recorded audio was invalid",
+                    "empty": "Səs yazılmadı — yenidən danışın",
+                    "too_short": "Səs yazısı çox qısadır — yenidən danışın",
+                    "silence": "Səssizlik aşkarlandı — mikrofona yaxın danışın",
+                    "invalid": "Səs yazısı yararsızdır — yenidən sınayın",
                 }
                 self.panel.show(messages[reason], color="#fab387", bg_color="#2d2520", hide_after=3000)
                 return
 
             assert audio_data is not None
-            audio_part = types.Part.from_bytes(data=encode_wav(audio_data), mime_type="audio/wav")
+            text = ""
+            if live_session is not None and not live_failed:
+                try:
+                    text = (live_session.finish(timeout=LIVE_FINALIZE_TIMEOUT_SECONDS) or "").strip()
+                except Exception as error:
+                    print(f"Live finalization failed ({type(error).__name__}); using batch.")
+                if text:
+                    route = "live"
+                else:
+                    with self._lock:
+                        self._live_disabled_until = time.monotonic() + LIVE_FAILURE_COOLDOWN_SECONDS
+                    print("Live transcription incomplete; using the full recording with batch fallback.")
             if self._shutdown.is_set():
                 return
-            candidate_models = (TRANSCRIPTION_MODEL, *FALLBACK_MODELS)
-            timeout_ms = transcription_timeout_ms(len(audio_data))
-            response = None
-            last_error = None
-
-            for model_name in candidate_models:
-                if self._shutdown.is_set():
-                    return
-                try:
-                    if model_name == TRANSCRIPTION_MODEL:
-                        response = self.client.models.generate_content(
-                            model=model_name,
-                            contents=[audio_part],
-                            config=types.GenerateContentConfig(
-                                audio_transcription_config=types.AudioTranscriptionConfig(language_codes=[]),
-                                http_options=types.HttpOptions(timeout=timeout_ms),
-                            ),
-                        )
-                    else:
-                        prompt = (
-                            "Accurately transcribe the spoken audio verbatim. "
-                            "Return ONLY the transcribed speech. Do not add commentary, "
-                            "conversational replies, explanations, formatting, or quotation marks. "
-                            "If no speech is heard, return nothing."
-                        )
-                        response = self.client.models.generate_content(
-                            model=model_name,
-                            contents=[prompt, audio_part],
-                            config=types.GenerateContentConfig(
-                                temperature=0.0,
-                                http_options=types.HttpOptions(timeout=timeout_ms),
-                            ),
-                        )
-                    if response is not None:
-                        break
-                except Exception as model_err:
-                    last_error = model_err
-                    code = getattr(model_err, "code", None)
-                    err_msg = str(model_err)
-                    print(f"Model {model_name} failed (code={code}): {err_msg[:120]}")
-                    if code in (401, 403):
-                        raise
-                    if code in (429, 404, 500, 502, 503, 504) or "quota" in err_msg.lower() or "resource_exhausted" in err_msg.lower():
-                        continue
-
-            if response is None:
-                assert last_error is not None
-                raise last_error
-            text = extract_transcription_text(response)
             if not text:
-                self.panel.show("Audio was not understood", color="#fab387", bg_color="#2d2520", hide_after=3000)
+                text = self._batch_transcribe(audio_data)
+            if self._shutdown.is_set():
+                return
+            if not text:
+                self.panel.show("Danışıq başa düşülmədi — yenidən sınayın", color="#fab387", bg_color="#2d2520", hide_after=3000)
                 return
             self.last_text = text
+            result_at = time.monotonic()
+            self.last_timing = {
+                "route": route,
+                "audio_seconds": round(len(audio_data) / SAMPLE_RATE, 3),
+                "stop_to_result_ms": round((result_at - stopped_at) * 1000),
+            }
             if self._shutdown.is_set():
                 return
+            prepared_paste = self._paste_action
+            prepare_paste = getattr(prepared_paste, "prepare", None)
+            if callable(prepare_paste):
+                try:
+                    # Capture the destination before copying, because clipboard
+                    # ownership may briefly move focus to the clipboard helper.
+                    prepared_paste = prepare_paste()
+                except Exception as error:
+                    print(
+                        f"Automatic paste preparation failed ({type(error).__name__}); "
+                        "text remains on the clipboard."
+                    )
+                    prepared_paste = None
             try:
                 copy_to_clipboard(text)
             except Exception as error:
                 print(f"Clipboard copy failed ({type(error).__name__}).")
-                self.panel.show("Clipboard unavailable — text kept in memory", color="#f38ba8", bg_color="#302020", hide_after=5000)
+                self.panel.show("Clipboard əlçatan deyil — mətn yadda saxlanıldı", color="#f38ba8", bg_color="#302020", hide_after=5000)
                 return
-            self.panel.show("Copied to clipboard", color="#a6e3a1", bg_color="#1e2e1e", hide_after=3000)
-            print("Transcription copied to clipboard.")
+            self.last_timing["stop_to_copy_ms"] = round((time.monotonic() - stopped_at) * 1000)
+            paste_succeeded = False
+            if prepared_paste is not None and not self._shutdown.is_set():
+                try:
+                    prepared_paste()
+                except Exception as error:
+                    print(
+                        f"Automatic paste failed ({type(error).__name__}); "
+                        "text remains on the clipboard."
+                    )
+                else:
+                    paste_succeeded = True
+                    self.last_timing["stop_to_paste_ms"] = round(
+                        (time.monotonic() - stopped_at) * 1000
+                    )
+            completion_message = (
+                "Mətn kopyalandı"
+                if paste_succeeded
+                else "Hazırdır — Ctrl+V ilə yapışdırın"
+            )
+            self.panel.show(completion_message, color="#a6e3a1", bg_color="#1e2e1e", hide_after=3000)
+            print(
+                f"Transcription copied to clipboard. route={route}; "
+                f"audio_seconds={self.last_timing['audio_seconds']}; "
+                f"stop_to_copy_ms={self.last_timing['stop_to_copy_ms']}"
+            )
         except Exception as error:
             print(f"Transcription failed ({type(error).__name__}, status={getattr(error, 'code', 'unknown')}).")
             self.panel.show(friendly_api_error(error), color="#f38ba8", bg_color="#302020", hide_after=5000)
         finally:
+            if live_session is not None:
+                live_session.cancel()
             with self._lock:
+                if self._processing_live is live_session:
+                    self._processing_live = None
                 shutting_down = self.state == "shutting_down"
                 if not shutting_down:
                     self.state = "idle"
@@ -783,23 +1058,26 @@ class VoiceTypingApp:
 
     def copy_last_transcription(self) -> bool:
         if not self.last_text:
-            self.panel.show("No transcription is available", color="#fab387", bg_color="#2d2520", hide_after=2000)
+            self.panel.show("Yapışdırmaq üçün hazır mətn yoxdur", color="#fab387", bg_color="#2d2520", hide_after=2000)
             return False
         try:
             copy_to_clipboard(self.last_text)
         except Exception:
-            self.panel.show("Clipboard unavailable", color="#f38ba8", bg_color="#302020", hide_after=3000)
+            self.panel.show("Clipboard əlçatan deyil", color="#f38ba8", bg_color="#302020", hide_after=3000)
             return False
-        self.panel.show("Copied to clipboard", color="#a6e3a1", bg_color="#1e2e1e", hide_after=2000)
+        self.panel.show("Hazırdır — Ctrl+V ilə yapışdırın", color="#a6e3a1", bg_color="#1e2e1e", hide_after=2000)
         return True
 
     def update_client(self, api_key: str) -> bool:
         with self._lock:
             if self.state == "processing":
-                self.panel.show("Wait for transcription to finish", color="#fab387", bg_color="#2d2520", hide_after=2500)
+                self.panel.show("Mətnə çevrilmə bitsin deyə gözləyin", color="#fab387", bg_color="#2d2520", hide_after=2500)
                 return False
             old_client = self.client
             self.client = create_client(api_key)
+            if self._live_factory is not None:
+                self._live_factory = lambda: create_live_transcriber(api_key)
+                self._live_disabled_until = 0.0
         try:
             old_client.close()
         except Exception:
@@ -814,13 +1092,23 @@ class VoiceTypingApp:
             self._shutdown.set()
             stream = self.stream
             self.stream = None
+            capture = self._capture_context
+            self._capture_context = None
+            self.recordings = []
             timer = self.duration_timer
             self.duration_timer = None
+            live_sessions = (self._live_session, self._processing_live)
+            self._live_session = None
             listener = self.listener
             worker = self.worker
         if timer:
             timer.cancel()
         self._close_stream(stream)
+        if capture is not None:
+            capture.seal_and_snapshot()
+        for live_session in live_sessions:
+            if live_session is not None:
+                live_session.cancel()
         if listener is not None:
             listener.stop()
         if worker is None or not worker.is_alive():
@@ -847,10 +1135,7 @@ def run_tray(app: VoiceTypingApp) -> None:
     def on_change_api_key(icon, menu_item) -> None:
         new_key = get_api_key(force=True)
         if new_key and app.update_client(new_key):
-            try:
-                subprocess.run(["notify-send", APP_NAME, "API key updated successfully"], check=False)
-            except FileNotFoundError:
-                pass
+            print("Gemini API key updated.")
 
     def on_quit(icon, menu_item) -> None:
         app.shutdown()
@@ -911,7 +1196,27 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         panel = NotificationPanel()
-        app = VoiceTypingApp(create_client(api_key), panel)
+        config = load_config()
+        live_factory = None
+        if config.get("live_transcription", True):
+            live_factory = lambda: create_live_transcriber(api_key)
+        paste_action = None
+        if config.get("auto_paste", True):
+            try:
+                from auto_paste import AutomaticPaste
+
+                paste_action = AutomaticPaste()
+            except Exception as error:
+                print(
+                    f"Automatic paste unavailable ({type(error).__name__}); "
+                    "text will remain on the clipboard."
+                )
+        app = VoiceTypingApp(
+            create_client(api_key),
+            panel,
+            live_factory=live_factory,
+            paste_action=paste_action,
+        )
 
         def signal_handler(sig, frame) -> None:
             threading.Thread(target=app.toggle, daemon=True, name="toggle-signal").start()
@@ -940,7 +1245,7 @@ def main(argv: list[str] | None = None) -> int:
         elif shortcut_status != SHORTCUT_ACTIVE:
             print("F8 shortcut is inactive; use the tray menu or resolve the GNOME shortcut warning.")
 
-        panel.show("Ready — Press F8", color="#a6e3a1", bg_color="#1e2e1e", hide_after=2500)
+        panel.show("Hazırdır — başlamaq üçün F8 basın", color="#a6e3a1", bg_color="#1e2e1e", hide_after=2500)
         print("VoiceTyping is ready. Press F8 to start or stop recording.")
         try:
             run_tray(app)

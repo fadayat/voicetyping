@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$HOME/.local/bin/voicetyping"
 APPLICATIONS_DIR="$HOME/.local/share/applications"
 AUTOSTART_DIR="$HOME/.config/autostart"
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+AUTOSTART_DROPIN_DIR="$SYSTEMD_USER_DIR/app-voicetyping@autostart.service.d"
 PYTHON_BIN="$(command -v python3)"
 
 echo "=================================================="
@@ -18,9 +20,9 @@ fi
 
 echo "📦 Install the required system packages if they are missing:"
 if command -v dnf >/dev/null 2>&1; then
-    echo "  Fedora: wl-clipboard xclip portaudio python3-tkinter libappindicator-gtk3 libayatana-appindicator-gtk3"
+    echo "  Fedora: wl-clipboard xclip portaudio python3-tkinter python3-gobject python3-cairo gtk3 libappindicator-gtk3 libayatana-appindicator-gtk3"
 elif command -v apt >/dev/null 2>&1; then
-    echo "  Debian/Ubuntu: xclip wl-clipboard libportaudio2 python3-tk libappindicator3-1"
+    echo "  Debian/Ubuntu: xclip wl-clipboard libportaudio2 python3-tk python3-gi python3-gi-cairo gir1.2-gtk-3.0 libappindicator3-1"
 else
     echo "  Install clipboard tools, PortAudio, and Tkinter using your distribution's package manager."
 fi
@@ -29,8 +31,12 @@ echo "🐍 Installing Python libraries..."
 "$PYTHON_BIN" -m pip install --user -r "$SCRIPT_DIR/requirements.txt"
 
 echo "📂 Placing files into $INSTALL_DIR..."
-mkdir -p "$INSTALL_DIR" "$APPLICATIONS_DIR" "$AUTOSTART_DIR"
+mkdir -p "$INSTALL_DIR" "$APPLICATIONS_DIR" "$AUTOSTART_DIR" "$AUTOSTART_DROPIN_DIR"
 install -m 0644 "$SCRIPT_DIR/voicetyping.py" "$INSTALL_DIR/voicetyping.py"
+install -m 0644 "$SCRIPT_DIR/live_transcription.py" "$INSTALL_DIR/live_transcription.py"
+install -m 0644 "$SCRIPT_DIR/auto_paste.py" "$INSTALL_DIR/auto_paste.py"
+install -m 0644 "$SCRIPT_DIR/voice_overlay.py" "$INSTALL_DIR/voice_overlay.py"
+install -m 0644 "$SCRIPT_DIR/voice_visual.py" "$INSTALL_DIR/voice_visual.py"
 install -m 0644 "$SCRIPT_DIR/voicetyping_toggle.py" "$INSTALL_DIR/voicetyping_toggle.py"
 install -m 0644 "$SCRIPT_DIR/setup_shortcut.py" "$INSTALL_DIR/setup_shortcut.py"
 
@@ -56,6 +62,14 @@ Type=Application
 Categories=Utility;
 EOF
 install -m 0644 "$DESKTOP_FILE" "$AUTOSTART_DIR/voicetyping.desktop"
+
+cat > "$AUTOSTART_DROPIN_DIR/override.conf" <<'EOF'
+[Service]
+Restart=on-failure
+RestartSec=2s
+Environment=PYTHONUNBUFFERED=1
+EOF
+systemctl --user daemon-reload
 
 echo "⌨️ Configuring GNOME shortcut..."
 "$PYTHON_BIN" "$INSTALL_DIR/setup_shortcut.py" || true
