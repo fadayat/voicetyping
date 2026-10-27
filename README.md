@@ -1,63 +1,62 @@
+<div align="center">
+
 # VoiceTyping
 
-## Version 2.1.0
+**Speak once. Keep typing on Linux.**
 
-VoiceTyping is a Linux desktop voice-to-text utility. Press `F8` to start recording
-and live transcription, and press it again to stop. Audio streams to Google's
-Gemini API while you speak. After the second `F8`, the finalized transcript is
-copied to the system clipboard and pasted into the currently focused field.
+Press `F8`, speak, then press it again. VoiceTyping transcribes the recording
+with Gemini and pastes the final text into the field you kept focused.
 
-Current support is Linux only. GNOME custom shortcuts are configured automatically when available. Other desktop environments can use the tray and in-app `F8` listener while VoiceTyping is running, or configure a desktop shortcut to run the installed `voicetyping_toggle.py` helper.
+[Website](https://voicetyping1.vercel.app/) ·
+[VoiceTyping 2.1.0](https://github.com/fadayat/voicetyping/releases/tag/v2.1.0) ·
+[Changelog](CHANGELOG.md) ·
+[MIT license](LICENSE)
 
-## How it works and limits
+</div>
 
-- Audio is captured from the default microphone as mono 16 kHz PCM and streamed to
-  `gemini-3.5-transcribe-live` during an F8 recording. Each recording owns its own
-  connection; no microphone audio is sent while idle. An Azerbaijani language hint
-  is used by default.
-- If Live is unavailable, the connection breaks, audio buffering overflows, or
-  finalization exceeds three seconds, the complete in-memory recording is sent
-  through the existing `gemini-3.5-transcribe`/Flash fallback path. Partial Live text
-  is never copied as a final result. Failed Live attempts have a 60-second cooldown.
-- Transcription requires an internet connection and a Google Gemini API key. Audio leaves the computer for processing; the app does not keep an audio archive.
-- After a successful transcription, VoiceTyping copies the final text and sends
-  one paste shortcut to the currently focused field. On GNOME Wayland, the app
-  identifies a standalone terminal from accessibility window-state metadata and
-  its process ID, without reading terminal text or window titles.
-  Recognized terminals receive `Ctrl+Shift+V`; ordinary fields receive `Ctrl+V`.
-  Unknown terminals, terminal applications embedded in IDEs, and custom terminal
-  setups may still need their manual paste shortcut. If automatic paste is not
-  supported or fails, the copied text remains available for manual pasting.
-  VoiceTyping sends no Enter key. Pasting multiline text into a terminal may
-  still run commands depending on the shell and terminal settings.
-- GNOME Wayland automatic paste uses a temporary local Mutter input session. It
-  does not capture the screen, need root access, or start another daemon. This
-  uses a private desktop API, so GNOME upgrades can change compatibility. There
-  is no fixed 0.2-second wait before pasting.
-- The app records until you press `F8` again and caps recordings at seven minutes.
-  Recordings shorter than 0.25 seconds and recordings detected as silence are
-  rejected before copying or batch fallback. The Live service may already have
-  received such audio during the user-initiated recording.
-- F8 toggles recording only while the application is running. On GNOME, the installed custom shortcut sends the toggle signal to the running app. Launch VoiceTyping normally from the Applications menu first.
-- Clipboard support depends on the desktop session and clipboard tools (`wl-clipboard` on Wayland and/or `xclip` on X11). Microphone recording requires PortAudio and a working input device.
+[![VoiceTyping website preview](docs/website-preview.png)](https://voicetyping1.vercel.app/)
 
-## Install on Linux
+VoiceTyping is an open-source Linux desktop dictation utility. It streams audio
+while you speak, keeps the complete recording in memory as a fallback, and
+inserts only the finalized transcript.
 
-Python 3.10 or newer is required. Install the system packages for your distribution:
+## One shortcut, three steps
+
+| Step | What VoiceTyping does |
+| --- | --- |
+| **1. Capture** | `F8` starts and stops a recording from the default microphone. |
+| **2. Transcribe** | Gemini Live handles the active stream. The complete recording can use batch transcription if Live fails. |
+| **3. Insert** | The final text is copied and pasted with `Ctrl+V`, or `Ctrl+Shift+V` in recognized standalone terminals. |
+
+VoiceTyping never sends the Enter key. If automatic paste is unavailable, the
+transcript remains on the clipboard.
+
+## Install
+
+You need Linux, Python 3.10 or newer, an internet connection, and your own
+[Gemini API key](https://aistudio.google.com/).
+
+<details>
+<summary>Install the required system packages</summary>
+
+### Fedora
 
 ```bash
-# Fedora
 sudo dnf install wl-clipboard xclip portaudio python3-tkinter \
   python3-gobject python3-cairo gtk3 libappindicator-gtk3 libayatana-appindicator-gtk3
+```
 
-# Debian / Ubuntu
+### Debian and Ubuntu
+
+```bash
 sudo apt update
 sudo apt install xclip wl-clipboard libportaudio2 python3-tk python3-gi \
   python3-gi-cairo gir1.2-gtk-3.0 libappindicator3-1
 ```
 
-Clone the repository, then run the installer as your regular user (do not run it
-with `sudo`):
+</details>
+
+Clone the repository and run the installer as your regular user:
 
 ```bash
 git clone https://github.com/fadayat/voicetyping.git
@@ -66,46 +65,78 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The installer installs the Python dependencies from `requirements.txt` into your user environment, copies the app under `~/.local/bin/voicetyping`, creates an Applications menu entry and autostart entry, and attempts GNOME shortcut setup. If the configured key is already assigned to another GNOME custom shortcut, setup leaves that shortcut alone and reports the collision.
+The installer places VoiceTyping under `~/.local/bin/voicetyping`, adds an
+Applications menu entry and autostart entry, and configures the GNOME shortcut
+when it can do so without replacing an existing shortcut.
 
-## First run and configuration
+## Use VoiceTyping
 
-Launch **VoiceTyping** from the Applications menu. On first run, enter a Gemini API key from [Google AI Studio](https://aistudio.google.com/). The key is stored as plain text in `~/.config/voicetyping/config.json` with owner-only permissions (`0600`); protect access to your local account and do not share that file. Anyone who can read it can use the key and may incur API charges. You can instead supply `GEMINI_API_KEY` in the environment. Replace a stored key through the tray menu's **Settings (API Key)** item.
+1. Launch **VoiceTyping** from the Applications menu.
+2. Enter your Gemini API key on first run.
+3. Focus a text field and press `F8`.
+4. Speak, then press `F8` again. Keep the destination focused until the text is
+   inserted.
 
-No API key is bundled with this repository. Each user supplies their own key;
-available models, free-tier quotas, and billing depend on that user's Google
-project. Configuration, environment files, recordings, and logs must remain local.
+The floating indicator grows with your voice, flows while the transcript is
+finalized, and disappears when the text is ready. It stays click-through and
+does not take keyboard focus.
 
-Typical use:
+## Compatibility
 
-1. Launch VoiceTyping and focus the destination text field.
-2. Press `F8`, speak, then press `F8` again. Allow microphone access if requested.
-3. Keep the destination focused until the finalized text is copied and pasted.
-   The app targets the field focused when the result arrives, not a saved window.
-   If automatic paste is unavailable, use the destination's manual paste shortcut.
+| Environment | Behavior |
+| --- | --- |
+| **GNOME Wayland** | Best supported. The installer can add the global `F8` shortcut, and automatic paste uses a temporary Mutter input session. |
+| **Other Linux desktops** | Use the tray or in-app `F8` listener while VoiceTyping is running, or bind `voicetyping_toggle.py` as a desktop shortcut. |
+| **Standalone terminals** | Recognized terminals receive `Ctrl+Shift+V`. Unknown or custom terminal setups may need manual paste. |
+| **Editors and ordinary fields** | Receive the standard `Ctrl+V` shortcut. |
 
-The screen shows a transparent round animation: it grows with your voice, shrinks
-during silence, flows while processing, then contracts and disappears on completion.
-It shows no text or desktop notifications and leaves keyboard focus in your editor.
-A warm-colored orb indicates a warning or error; diagnostic details remain in the
-terminal or user service journal.
+GNOME automatic paste relies on a private Mutter API, so a GNOME update can
+change compatibility. The animation requires a composited desktop.
 
-Live transcription and automatic paste are enabled by default. To opt out of
-automatic paste, add `"auto_paste": false` to the existing configuration JSON
-without replacing the API key or other settings. To opt out of Live transcription,
-add `"live_transcription": false`. `"language_codes": []` selects automatic
-language detection instead of the default Azerbaijani hint. Restart the application
-after changing these options.
-The service logs the selected route, audio duration, and stop-to-copy milliseconds;
-it does not log audio, transcript text, or API keys.
+## Privacy and local data
+
+- Audio is sent to Google only during a recording you start. A failed Live
+  session may resend the complete in-memory recording through batch
+  transcription.
+- VoiceTyping does not keep an audio archive and does not log audio, transcript
+  text, or API keys.
+- The saved API key is plain text in
+  `~/.config/voicetyping/config.json`, protected with owner-only permissions
+  (`0600`). Anyone with access to your local account can read and use it.
+- Configuration files, environment files, recordings, and logs should remain
+  local. This repository includes no API key.
+
+## Settings
+
+The tray menu contains **Settings (API Key)**. You can also provide the key with
+the `GEMINI_API_KEY` environment variable.
+
+Add optional settings to the existing configuration JSON, then restart the app:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `"auto_paste": false` | `true` | Keep the transcript on the clipboard without sending a paste shortcut. |
+| `"live_transcription": false` | `true` | Use the complete-recording batch path. |
+| `"language_codes": []` | Azerbaijani hint | Let Gemini detect the spoken language automatically. |
+
+<details>
+<summary>Recording limits and failure behavior</summary>
+
+- A recording can run for up to seven minutes.
+- Recordings shorter than 0.25 seconds and recordings detected as silence are
+  rejected before copy or batch fallback.
+- VoiceTyping switches to batch transcription when Live is unavailable, the
+  connection breaks, audio buffering overflows, or finalization exceeds three
+  seconds. Partial Live text is never used as the final result.
+- Failed Live attempts have a 60-second cooldown.
+- Clipboard support needs `wl-clipboard` on Wayland or `xclip` on X11.
+- Multiline text pasted into a terminal may execute commands according to that
+  terminal and shell's own settings, even though VoiceTyping never presses
+  Enter.
+
+</details>
 
 ## Development
-
-Python dependencies are listed in `requirements.txt`. The application uses Tkinter
-for the API-key dialog, GTK3/Cairo for its transparent animation, a microphone/audio
-input library, the Google GenAI SDK, a global keyboard listener, and a system tray
-icon. The animation needs a composited desktop; GNOME Wayland uses XWayland for the
-positioned, click-through overlay. GTK's animation preference reduces its motion.
 
 ```bash
 python3 -m pip install --user -r requirements.txt
@@ -113,6 +144,10 @@ python3 voicetyping.py
 python3 -m unittest discover -s tests -v
 ```
 
+The app uses Tkinter for API-key setup, GTK3/Cairo for the transparent
+indicator, Google GenAI for transcription, and desktop-specific clipboard and
+shortcut integrations. See [DESIGN.md](DESIGN.md) for the internal design.
+
 ## License
 
-This project is open source and available under the [MIT License](LICENSE).
+VoiceTyping is available under the [MIT License](LICENSE).
