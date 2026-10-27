@@ -19,7 +19,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes python3-pip
+          sudo apt-get install --yes build-essential python3-dev python3-pip
       - name: Build Debian package
         run: ./packaging/deb/build-deb.sh "${{ inputs.version }}"
       - name: Validate Debian package
@@ -43,7 +43,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libfuse2 python3-pip
+          sudo apt-get install --yes build-essential libfuse2 python3-dev python3-pip
           curl --fail --location --retry 3 \
             --output /tmp/appimage-builder.AppImage \
             https://github.com/AppImageCrafters/appimage-builder/releases/download/v1.1.0/appimage-builder-1.1.0-x86_64.AppImage

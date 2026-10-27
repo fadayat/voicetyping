@@ -54,4 +54,3 @@ AppDir:
 AppImage:
   arch: x86_64
   update-information: gh-releases-zsync|fadayat|voicetyping|latest|VoiceTyping-*-x86_64.AppImage.zsync
-  sign-key: null

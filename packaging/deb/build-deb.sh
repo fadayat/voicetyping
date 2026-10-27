@@ -58,7 +58,6 @@ done
 "$PYTHON_BIN" -m pip install \
     --disable-pip-version-check \
     --no-cache-dir \
-    --only-binary=:all: \
     --target "$APP_ROOT/vendor" \
     --requirement "$PROJECT_DIR/requirements.txt"
 
