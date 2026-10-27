@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+export PYTHONNOUSERSITE=1
+export PYTHONPATH=/opt/voicetyping/vendor
+export VOICETYPING_LAUNCHER=/usr/bin/voicetyping
+
+exec /usr/bin/python3 /opt/voicetyping/app/voicetyping.py "$@"

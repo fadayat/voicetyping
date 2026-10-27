@@ -30,6 +30,7 @@ from live_transcription import LiveTranscriber
 
 
 APP_NAME = "VoiceTyping"
+APP_VERSION = "2.1.1"
 SAMPLE_RATE = 16_000
 CHANNELS = 1
 MIN_RECORDING_SECONDS = 0.25
@@ -1152,6 +1153,9 @@ def run_tray(app: VoiceTypingApp) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ["--version"]:
+        print(f"{APP_NAME} {APP_VERSION}")
+        return 0
     if argv and argv[0] == "--toggle":
         return 0 if send_toggle() else 1
     if argv and argv[0] == "--settings":

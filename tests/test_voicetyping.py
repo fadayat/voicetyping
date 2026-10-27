@@ -291,6 +291,14 @@ class AnimationPanelTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_version_mode_never_claims_pid_file(self):
+        with mock.patch.object(vt, "acquire_pid_file") as acquire, mock.patch(
+            "builtins.print"
+        ) as print_message:
+            self.assertEqual(vt.main(["--version"]), 0)
+        acquire.assert_not_called()
+        print_message.assert_called_once_with("VoiceTyping 2.1.1")
+
     def test_save_is_private_atomic_and_preserves_other_settings(self):
         with tempfile.TemporaryDirectory() as directory:
             config_dir = Path(directory) / "voicetyping"

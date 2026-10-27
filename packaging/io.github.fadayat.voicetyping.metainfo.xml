@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.fadayat.voicetyping</id>
+  <name>VoiceTyping</name>
+  <summary>Press F8 to dictate into the focused field</summary>
+  <developer id="io.github.fadayat">
+    <name>fadayat</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      VoiceTyping records speech between two F8 presses, transcribes it with
+      Gemini, and pastes the finalized text into the focused field.
+    </p>
+    <p>
+      It supports terminal-aware paste, Live transcription with a complete
+      recording fallback, and a click-through audio indicator.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.fadayat.voicetyping.desktop</launchable>
+  <url type="homepage">https://voicetyping1.vercel.app/</url>
+  <url type="bugtracker">https://github.com/fadayat/voicetyping/issues</url>
+  <url type="vcs-browser">https://github.com/fadayat/voicetyping</url>
+  <releases>
+    <release version="2.1.1" date="2026-10-27"/>
+    <release version="2.1.0" date="2026-10-17"/>
+  </releases>
+  <provides>
+    <binary>voicetyping</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+</component>

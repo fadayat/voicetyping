@@ -1,0 +1,57 @@
+version: 1
+
+script:
+  - PROJECT_DIR="${VOICETYPING_PROJECT_DIR:?VOICETYPING_PROJECT_DIR is required}"
+  - rm -rf "$TARGET_APPDIR"
+  - mkdir -p "$TARGET_APPDIR/usr/src/voicetyping" "$TARGET_APPDIR/usr/share/applications" "$TARGET_APPDIR/usr/share/icons/hicolor/scalable/apps" "$TARGET_APPDIR/usr/share/metainfo"
+  - install -m 0644 "$PROJECT_DIR"/voicetyping.py "$PROJECT_DIR"/live_transcription.py "$PROJECT_DIR"/auto_paste.py "$PROJECT_DIR"/voice_overlay.py "$PROJECT_DIR"/voice_visual.py "$PROJECT_DIR"/voicetyping_toggle.py "$PROJECT_DIR"/setup_shortcut.py "$TARGET_APPDIR/usr/src/voicetyping/"
+  - python3 -m pip install --disable-pip-version-check --no-cache-dir --ignore-installed --prefix=/usr --root="$TARGET_APPDIR" --requirement "$PROJECT_DIR/requirements.txt"
+  - install -m 0644 "$PROJECT_DIR/packaging/io.github.fadayat.voicetyping.desktop" "$TARGET_APPDIR/usr/share/applications/io.github.fadayat.voicetyping.desktop"
+  - install -m 0644 "$PROJECT_DIR/packaging/voicetyping.svg" "$TARGET_APPDIR/usr/share/icons/hicolor/scalable/apps/voicetyping.svg"
+  - install -m 0644 "$PROJECT_DIR/packaging/io.github.fadayat.voicetyping.metainfo.xml" "$TARGET_APPDIR/usr/share/metainfo/io.github.fadayat.voicetyping.metainfo.xml"
+
+AppDir:
+  path: ./AppDir
+
+  app_info:
+    id: io.github.fadayat.voicetyping
+    name: VoiceTyping
+    icon: voicetyping
+    version: 2.1.1
+    exec: usr/bin/python3
+    exec_args: "$APPDIR/usr/src/voicetyping/voicetyping.py $@"
+
+  apt:
+    arch:
+      - amd64
+    sources:
+      - sourceline: deb [arch=amd64] https://archive.ubuntu.com/ubuntu/ jammy main universe
+        key_url: https://archive.ubuntu.com/ubuntu/project/ubuntu-archive-keyring.gpg
+      - sourceline: deb [arch=amd64] https://archive.ubuntu.com/ubuntu/ jammy-updates main universe
+        key_url: https://archive.ubuntu.com/ubuntu/project/ubuntu-archive-keyring.gpg
+      - sourceline: deb [arch=amd64] https://security.ubuntu.com/ubuntu/ jammy-security main universe
+        key_url: https://archive.ubuntu.com/ubuntu/project/ubuntu-archive-keyring.gpg
+    include:
+      - python3
+      - python3-tk
+      - python3-gi
+      - python3-cairo
+      - gir1.2-gtk-3.0
+      - gir1.2-ayatanaappindicator3-0.1
+      - libportaudio2
+      - libsndfile1
+      - wl-clipboard
+      - xclip
+    exclude: []
+
+  runtime:
+    env:
+      PYTHONHOME: '${APPDIR}/usr'
+      PYTHONNOUSERSITE: '1'
+      PYTHONPATH: '${APPDIR}/usr/lib/python3.10/site-packages'
+      GI_TYPELIB_PATH: '${APPDIR}/usr/lib/x86_64-linux-gnu/girepository-1.0'
+
+AppImage:
+  arch: x86_64
+  update-information: gh-releases-zsync|fadayat|voicetyping|latest|VoiceTyping-*-x86_64.AppImage.zsync
+  sign-key: null

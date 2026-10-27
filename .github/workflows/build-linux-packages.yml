@@ -1,0 +1,65 @@
+name: Build Linux packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version
+        required: true
+        default: 2.1.1
+
+permissions:
+  contents: read
+
+jobs:
+  deb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes python3-pip
+      - name: Build Debian package
+        run: ./packaging/deb/build-deb.sh "${{ inputs.version }}"
+      - name: Validate Debian package
+        run: |
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+          sudo apt-get install --yes ./dist/*.deb
+          test "$(voicetyping --version)" = "VoiceTyping ${{ inputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voicetyping-deb-${{ inputs.version }}
+          path: |
+            dist/*.deb
+            dist/*.deb.sha256
+          if-no-files-found: error
+
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libfuse2 python3-pip
+          curl --fail --location --retry 3 \
+            --output /tmp/appimage-builder.AppImage \
+            https://github.com/AppImageCrafters/appimage-builder/releases/download/v1.1.0/appimage-builder-1.1.0-x86_64.AppImage
+          echo "4b4f99cae9291d78ba12dbdabca7c0a67c72aa61eb2e5d424089171a9485e96f  /tmp/appimage-builder.AppImage" | sha256sum --check
+          chmod +x /tmp/appimage-builder.AppImage
+      - name: Build AppImage
+        env:
+          APPIMAGE_BUILDER: /tmp/appimage-builder.AppImage
+        run: ./packaging/appimage/build-appimage.sh "${{ inputs.version }}"
+      - name: Validate AppImage
+        run: |
+          test "$(APPIMAGE_EXTRACT_AND_RUN=1 ./dist/*.AppImage --version)" = "VoiceTyping ${{ inputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voicetyping-appimage-${{ inputs.version }}
+          path: |
+            dist/*.AppImage
+            dist/*.AppImage.sha256
+          if-no-files-found: error

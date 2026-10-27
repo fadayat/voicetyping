@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from setup_shortcut import (
     SHORTCUT_NOT_GNOME,
+    build_shortcut_command,
     find_binding_collision,
     find_owned_binding,
     setup_gnome_shortcut,
@@ -11,6 +12,30 @@ from setup_shortcut import (
 
 
 class ShortcutOwnershipTests(unittest.TestCase):
+    @patch.dict(os.environ, {"APPIMAGE": "/home/user/Voice Typing.AppImage"}, clear=True)
+    def test_appimage_shortcut_uses_persistent_image_path(self):
+        self.assertEqual(
+            build_shortcut_command(),
+            "'/home/user/Voice Typing.AppImage' --toggle",
+        )
+
+    @patch.dict(
+        os.environ,
+        {"VOICETYPING_LAUNCHER": "/usr/bin/voicetyping"},
+        clear=True,
+    )
+    def test_packaged_shortcut_uses_launcher(self):
+        self.assertEqual(build_shortcut_command(), "/usr/bin/voicetyping --toggle")
+
+    @patch.dict(os.environ, {}, clear=True)
+    @patch("setup_shortcut.sys.executable", "/usr/bin/python3")
+    @patch("setup_shortcut.os.path.abspath", return_value="/opt/voicetyping/setup_shortcut.py")
+    def test_source_shortcut_uses_python_and_helper(self, _abspath):
+        self.assertEqual(
+            build_shortcut_command(),
+            "/usr/bin/python3 /opt/voicetyping/voicetyping_toggle.py",
+        )
+
     def test_name_alone_does_not_claim_an_unrelated_binding(self):
         path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom8/"
         entries = {path: ("VoiceTyping", "/opt/voice.py --toggle", "<Alt>F8")}

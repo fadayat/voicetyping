@@ -35,3 +35,8 @@ config*.json
 preview_layout.png
 project_summary.md
 STREAMING_PLAN.md
+
+# Package builds
+dist/
+AppDir/
+appimage-builder-cache/

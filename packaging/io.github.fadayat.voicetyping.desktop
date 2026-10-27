@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=VoiceTyping
+Comment=Press F8 to dictate into the focused field
+Exec=voicetyping
+TryExec=voicetyping
+Icon=voicetyping
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=dictation;speech;voice;transcription;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

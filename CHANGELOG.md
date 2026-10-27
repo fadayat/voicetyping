@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.1.1
+
+### Added
+
+- Ready-to-install Ubuntu 24.04 `.deb` package with bundled Python libraries.
+- Portable x86_64 AppImage with an embedded Python runtime and desktop metadata.
+- Reproducible package build scripts and a GitHub Actions packaging workflow.
+- A `--version` command for package smoke tests and support diagnostics.
+
+### Improved
+
+- GNOME shortcuts created from an AppImage now target the persistent AppImage
+  file instead of its temporary mount path.
+- Packaged installations use a stable launcher path for the GNOME F8 shortcut.
+
 ## 2.1.0
 
 ### Added

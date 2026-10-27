@@ -74,6 +74,20 @@ def _read_custom_binding(path):
     )
 
 
+def build_shortcut_command():
+    """Return a persistent launcher command for source and packaged installs."""
+    appimage_path = os.environ.get("APPIMAGE", "").strip()
+    if appimage_path:
+        return shlex.join([appimage_path, "--toggle"])
+
+    launcher_path = os.environ.get("VOICETYPING_LAUNCHER", "").strip()
+    if launcher_path:
+        return shlex.join([launcher_path, "--toggle"])
+
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voicetyping_toggle.py")
+    return shlex.join([sys.executable, script_path])
+
+
 def setup_gnome_shortcut():
     """Configure a dedicated GNOME binding and return a status string."""
     desktop = os.environ.get("XDG_CURRENT_DESKTOP", "")
@@ -125,8 +139,7 @@ def setup_gnome_shortcut():
             current_list.append(owned_path)
             _gsettings("set", MEDIA_KEYS, "custom-keybindings", repr(current_list))
 
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voicetyping_toggle.py")
-        command = shlex.join([sys.executable, script_path])
+        command = build_shortcut_command()
         schema_path = f"{MEDIA_KEYS}.custom-keybinding:{owned_path}"
         for key, value in (
             ("name", "VoiceTyping"),
