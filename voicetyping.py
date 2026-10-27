@@ -21,12 +21,56 @@ from typing import Callable
 
 import numpy as np
 import pyperclip
-import sounddevice as sd
 import soundfile as sf
 from google import genai
 from google.genai import types
 
 from live_transcription import LiveTranscriber
+
+
+def _bundled_appimage_library(filename: str) -> str | None:
+    """Locate a native library bundled inside the current AppImage."""
+    appdir = os.environ.get("APPDIR", "").strip()
+    if not appdir:
+        return None
+    root = Path(appdir)
+    for relative_path in (
+        Path("usr/lib/x86_64-linux-gnu") / filename,
+        Path("lib/x86_64-linux-gnu") / filename,
+        Path("usr/lib") / filename,
+        Path("lib") / filename,
+    ):
+        candidate = root / relative_path
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _import_sounddevice():
+    bundled_portaudio = _bundled_appimage_library("libportaudio.so.2")
+    if bundled_portaudio is None:
+        import sounddevice
+
+        return sounddevice
+
+    import ctypes.util
+
+    original_find_library = ctypes.util.find_library
+
+    def find_library(name: str):
+        if name in {"portaudio", "libportaudio.so.2"}:
+            return bundled_portaudio
+        return original_find_library(name)
+
+    ctypes.util.find_library = find_library
+    try:
+        import sounddevice
+    finally:
+        ctypes.util.find_library = original_find_library
+    return sounddevice
+
+
+sd = _import_sounddevice()
 
 
 APP_NAME = "VoiceTyping"

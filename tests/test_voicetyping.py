@@ -291,6 +291,18 @@ class AnimationPanelTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_appimage_native_library_is_resolved_from_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            library = Path(directory) / "usr/lib/x86_64-linux-gnu/libportaudio.so.2"
+            library.parent.mkdir(parents=True)
+            library.touch()
+            with mock.patch.dict(os.environ, {"APPDIR": directory}):
+                self.assertEqual(vt._bundled_appimage_library(library.name), str(library))
+
+    def test_native_library_lookup_is_inactive_outside_appimage(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(vt._bundled_appimage_library("libportaudio.so.2"))
+
     def test_version_mode_never_claims_pid_file(self):
         with mock.patch.object(vt, "acquire_pid_file") as acquire, mock.patch(
             "builtins.print"
