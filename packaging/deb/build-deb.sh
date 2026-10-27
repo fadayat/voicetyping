@@ -95,5 +95,8 @@ EOF
 
 OUTPUT_PATH="$OUTPUT_DIR/voicetyping_${VERSION}-1_ubuntu24.04_${ARCH}.deb"
 dpkg-deb --root-owner-group --build "$PACKAGE_ROOT" "$OUTPUT_PATH"
-sha256sum "$OUTPUT_PATH" >"$OUTPUT_PATH.sha256"
+(
+    cd "$OUTPUT_DIR"
+    sha256sum "$(basename "$OUTPUT_PATH")" >"$(basename "$OUTPUT_PATH").sha256"
+)
 echo "$OUTPUT_PATH"

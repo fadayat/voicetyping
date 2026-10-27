@@ -15,7 +15,7 @@ jobs:
   deb:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -28,7 +28,7 @@ jobs:
           dpkg-deb --contents dist/*.deb
           sudo apt-get install --yes ./dist/*.deb
           test "$(voicetyping --version)" = "VoiceTyping ${{ inputs.version }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: voicetyping-deb-${{ inputs.version }}
           path: |
@@ -39,7 +39,7 @@ jobs:
   appimage:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install build tools
         run: |
           sudo apt-get update
@@ -56,7 +56,7 @@ jobs:
       - name: Validate AppImage
         run: |
           test "$(APPIMAGE_EXTRACT_AND_RUN=1 ./dist/*.AppImage --version)" = "VoiceTyping ${{ inputs.version }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: voicetyping-appimage-${{ inputs.version }}
           path: |

@@ -36,5 +36,8 @@ fi
 
 OUTPUT_PATH="$OUTPUT_DIR/VoiceTyping-${VERSION}-x86_64.AppImage"
 install -m 0755 "$BUILT_IMAGE" "$OUTPUT_PATH"
-sha256sum "$OUTPUT_PATH" >"$OUTPUT_PATH.sha256"
+(
+    cd "$OUTPUT_DIR"
+    sha256sum "$(basename "$OUTPUT_PATH")" >"$(basename "$OUTPUT_PATH").sha256"
+)
 echo "$OUTPUT_PATH"
