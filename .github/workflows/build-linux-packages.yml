@@ -1,18 +1,70 @@
 name: Build Linux packages
 
 on:
+  push:
+    branches:
+      - main
+      - codex/cross-distro-foundation
+  pull_request:
+    branches:
+      - main
+      - codex/cross-distro-foundation
   workflow_dispatch:
     inputs:
       version:
         description: Package version
         required: true
-        default: 2.1.1
+        default: 2.2.0
 
 permissions:
   contents: read
 
 jobs:
+  test:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Install desktop libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libportaudio2 python3-cairo python3-gi \
+            python3-gi-cairo python3-tk gir1.2-gtk-3.0
+      - name: Install locked Python dependencies
+        run: |
+          uv venv --system-site-packages
+          uv sync --locked
+      - name: Validate lockfile
+        run: uv lock --check
+      - name: Check changed lines for whitespace errors
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            git diff --check "origin/$BASE_REF...HEAD"
+          elif [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
+            git diff --check origin/main...HEAD
+          else
+            git diff --check "$PUSH_BEFORE" HEAD
+          fi
+      - name: Compile Python files
+        run: uv run --locked python -m compileall -q *.py tests
+      - name: Check shell syntax
+        run: |
+          bash -n install.sh
+          bash -n packaging/appimage/build-appimage.sh
+          bash -n packaging/deb/build-deb.sh
+      - name: Run unit tests
+        run: uv run --locked python -m unittest discover -s tests
+
   deb:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -37,6 +89,7 @@ jobs:
           if-no-files-found: error
 
   appimage:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="${1:-2.1.1}"
+VERSION="${1:-2.2.0}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/dist}"
 BUILDER="${APPIMAGE_BUILDER:-appimage-builder}"
 BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/voicetyping-appimage.XXXXXX")"
@@ -19,7 +19,7 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 cp "$PROJECT_DIR/packaging/appimage/AppImageBuilder.yml" "$BUILD_DIR/AppImageBuilder.yml"
-sed -i "s/version: 2\.1\.1/version: $VERSION/" "$BUILD_DIR/AppImageBuilder.yml"
+sed -i -E "s/version: [0-9]+\.[0-9]+\.[0-9]+/version: $VERSION/" "$BUILD_DIR/AppImageBuilder.yml"
 
 (
     cd "$BUILD_DIR"

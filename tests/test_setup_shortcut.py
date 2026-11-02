@@ -1,5 +1,8 @@
 import os
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from setup_shortcut import (
@@ -7,11 +10,26 @@ from setup_shortcut import (
     build_shortcut_command,
     find_binding_collision,
     find_owned_binding,
+    get_shortcut,
     setup_gnome_shortcut,
 )
 
 
 class ShortcutOwnershipTests(unittest.TestCase):
+    def test_get_shortcut_normalizes_config_to_gnome_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            config.write_text(json.dumps({"shortcut": "Control+Alt+F8"}))
+            with patch("setup_shortcut.CONFIG_FILE", str(config)):
+                self.assertEqual(get_shortcut(), "<Ctrl><Alt>F8")
+
+    def test_invalid_shortcut_config_falls_back_to_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            config.write_text(json.dumps({"shortcut": "Ctrl+"}))
+            with patch("setup_shortcut.CONFIG_FILE", str(config)):
+                self.assertEqual(get_shortcut(), "F8")
+
     @patch.dict(os.environ, {"APPIMAGE": "/home/user/Voice Typing.AppImage"}, clear=True)
     def test_appimage_shortcut_uses_persistent_image_path(self):
         self.assertEqual(
@@ -54,6 +72,12 @@ class ShortcutOwnershipTests(unittest.TestCase):
 
         self.assertIsNone(find_owned_binding([path], entries))
         self.assertEqual(find_binding_collision([path], entries, "F8"), path)
+
+    def test_collision_detection_normalizes_modifier_aliases(self):
+        path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom1/"
+        entries = {path: ("Other app", "other-app", "<Control><Alt>F8")}
+
+        self.assertEqual(find_binding_collision([path], entries, "Ctrl+Alt+F8"), path)
 
     def test_command_merely_mentioning_name_is_not_owned(self):
         path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom2/"

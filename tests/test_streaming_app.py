@@ -68,6 +68,7 @@ class FakeLiveSession:
         self.audio = []
         self.finish_calls = []
         self.cancel_calls = 0
+        self.timings = {"connect_ms": 18.2, "finalize_ms": 41.3, "stream_ms": 250.0}
 
     def start(self):
         self.started = True
@@ -88,6 +89,10 @@ class FakeLiveSession:
 
     def cancel(self):
         self.cancel_calls += 1
+
+    @property
+    def failure_reason(self):
+        return "empty_transcript" if not self.result else None
 
 
 class FakeStream:
@@ -185,6 +190,10 @@ class StreamingAppTests(unittest.TestCase):
         self.assertEqual(self.copy.call_args_list, [mock.call("recognized live text")])
         self.assertEqual(client.calls, [])
         self.assertEqual(app.last_timing.get("route"), "live")
+        self.assertEqual(app.last_timing.get("connect_ms"), 18)
+        self.assertEqual(app.last_timing.get("finalize_ms"), 41)
+        self.assertEqual(app.last_timing.get("stream_ms"), 250)
+        self.assertNotIn("fallback_reason", app.last_timing)
         self.assertEqual(app.state, "idle")
 
     def test_live_finalization_failure_batches_the_full_recording_and_sets_cooldown(self):
@@ -206,6 +215,7 @@ class StreamingAppTests(unittest.TestCase):
         self.assertEqual(self.copy.call_args_list, [mock.call("batch text")])
         self.assertEqual(client.calls, [])
         self.assertEqual(app.last_timing.get("route"), "batch")
+        self.assertEqual(app.last_timing.get("fallback_reason"), "live_empty_transcript")
 
     def record_after_start(self, app, chunk=None):
         self.assertTrue(app.start_recording())

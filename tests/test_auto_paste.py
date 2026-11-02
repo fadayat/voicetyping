@@ -62,8 +62,25 @@ class PasteShortcutTests(unittest.TestCase):
             mock.call(29, True), mock.call(42, True), mock.call(47, True),
             mock.call(47, False), mock.call(42, False), mock.call(29, False),
         ])
+
+
+    def test_x11_emits_paste_with_pynput_keys_and_releases_them(self):
+        controller = mock.Mock()
+        key_code = mock.Mock()
+        key_code.from_char.return_value = "v"
+        keys = mock.Mock(ctrl_l="ctrl", shift_l="shift")
+        with mock.patch.object(
+            ap, "_load_pynput_keyboard", return_value=(lambda: controller, keys, key_code)
+        ):
+            ap.paste_clipboard_x11(terminal=True)
+        self.assertEqual(controller.press.call_args_list, [
+            mock.call("ctrl"), mock.call("shift"), mock.call("v"),
+        ])
+        self.assertEqual(controller.release.call_args_list, [
+            mock.call("v"), mock.call("shift"), mock.call("ctrl"),
+        ])
         self.assertEqual(self.sleep.call_args_list, [
-            mock.call(0.01), mock.call(0.01), mock.call(0.01), mock.call(0.04),
+            mock.call(0.01), mock.call(0.01), mock.call(0.01),
         ])
 
     def test_terminal_uncertain_press_releases_v_shift_and_control_without_retry(self):
@@ -74,6 +91,24 @@ class PasteShortcutTests(unittest.TestCase):
             mock.call(29, True), mock.call(42, True), mock.call(47, True),
             mock.call(47, False), mock.call(42, False), mock.call(29, False),
         ])
+
+
+class PortalAutomaticPasteTests(unittest.TestCase):
+    def test_failed_portal_paste_disables_backend_for_future_transcriptions(self):
+        from auto_paste import PortalAutomaticPaste
+
+        keyboard = mock.Mock()
+        keyboard.paste.side_effect = RuntimeError("portal session closed")
+        action = PortalAutomaticPaste(keyboard)
+        with mock.patch("auto_paste.is_terminal_focused", return_value=False):
+            prepared = action.prepare()
+            with self.assertRaisesRegex(RuntimeError, "portal session closed"):
+                prepared()
+            self.assertIsNone(action.prepare())
+            action()
+
+        keyboard.paste.assert_called_once_with(terminal=False)
+        keyboard.close.assert_called_once_with()
 
 
 class TerminalDetectionTests(unittest.TestCase):
@@ -113,6 +148,12 @@ class TerminalDetectionTests(unittest.TestCase):
 
 class FocusMetadataTests(unittest.TestCase):
     @staticmethod
+    def gio_modules():
+        return mock.patch.object(
+            ap, "_load_gio_modules", return_value=(mock.Mock(), mock.Mock())
+        )
+
+    @staticmethod
     def reply(value):
         response = mock.Mock()
         response.unpack.return_value = (value,)
@@ -126,7 +167,8 @@ class FocusMetadataTests(unittest.TestCase):
             self.reply([ap.ACTIVE_STATE_MASK, 0]),
             self.reply(123),
         ]
-        with mock.patch.object(ap, "_connect_accessibility_bus", return_value=connection):
+        with self.gio_modules(), \
+                mock.patch.object(ap, "_connect_accessibility_bus", return_value=connection):
             self.assertEqual(ap._active_application_pids(), frozenset({123}))
         self.assertEqual([call.args[3] for call in connection.call_sync.call_args_list],
                          ['GetChildren', 'GetChildren', 'GetState', 'GetConnectionUnixProcessID'])
@@ -139,14 +181,16 @@ class FocusMetadataTests(unittest.TestCase):
             self.reply([(':1.1', '/window')]),
             self.reply([1 << 12, 0]),
         ]
-        with mock.patch.object(ap, "_connect_accessibility_bus", return_value=connection):
+        with self.gio_modules(), \
+                mock.patch.object(ap, "_connect_accessibility_bus", return_value=connection):
             self.assertEqual(ap._active_application_pids(), frozenset())
         self.assertEqual(connection.call_sync.call_count, 3)
 
     def test_failed_metadata_closes_dedicated_connection(self):
         connection = mock.Mock()
         connection.call_sync.side_effect = RuntimeError("unavailable")
-        with mock.patch.object(ap, "_connect_accessibility_bus", return_value=connection), \
+        with self.gio_modules(), \
+                mock.patch.object(ap, "_connect_accessibility_bus", return_value=connection), \
                 self.assertRaises(RuntimeError):
             ap._active_application_pids()
         connection.close_sync.assert_called_once_with(None)
@@ -161,7 +205,8 @@ class FocusMetadataTests(unittest.TestCase):
     def test_large_desktop_is_inconclusive_without_traversing_it(self):
         connection = mock.Mock()
         connection.call_sync.return_value = self.reply([(':1.1', '/app')] * 33)
-        with mock.patch.object(ap, "_connect_accessibility_bus", return_value=connection):
+        with self.gio_modules(), \
+                mock.patch.object(ap, "_connect_accessibility_bus", return_value=connection):
             self.assertEqual(ap._active_application_pids(), frozenset())
         connection.call_sync.assert_called_once()
         connection.close_sync.assert_called_once_with(None)

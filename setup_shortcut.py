@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import sys
 
+from shortcuts import parse_shortcut
+
 CONFIG_FILE = os.path.expanduser("~/.config/voicetyping/config.json")
 MEDIA_KEYS = "org.gnome.settings-daemon.plugins.media-keys"
 CUSTOM_PREFIX = f"/{MEDIA_KEYS.replace('.', '/')}/custom-keybindings/"
@@ -24,7 +26,7 @@ def get_shortcut():
         with open(CONFIG_FILE, encoding="utf-8") as config_file:
             shortcut = json.load(config_file).get("shortcut")
             if isinstance(shortcut, str) and shortcut.strip():
-                return shortcut.strip()
+                return parse_shortcut(shortcut).to_gnome_binding()
     except (OSError, ValueError, TypeError):
         pass
     return "F8"
@@ -49,12 +51,18 @@ def find_owned_binding(current_list, entries):
 
 def find_binding_collision(current_list, entries, target_binding, owned_path=None):
     """Find another custom shortcut already using the requested key."""
-    wanted = target_binding.casefold()
+    def canonical(binding):
+        try:
+            return parse_shortcut(binding).to_xdg_trigger().casefold()
+        except ValueError:
+            return binding.casefold()
+
+    wanted = canonical(target_binding)
     for path in current_list:
         if path == owned_path:
             continue
         binding = entries.get(path, ("", "", ""))[2]
-        if binding.casefold() == wanted:
+        if canonical(binding) == wanted:
             return path
     return None
 
@@ -107,7 +115,7 @@ def setup_gnome_shortcut():
 
         entries = {path: _read_custom_binding(path) for path in current_list}
         owned_path = find_owned_binding(current_list, entries)
-        target_binding = get_shortcut()
+        target_binding = parse_shortcut(get_shortcut()).to_gnome_binding()
         effective_binding = (
             entries[owned_path][2] or target_binding if owned_path is not None else target_binding
         )

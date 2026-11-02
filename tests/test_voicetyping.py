@@ -309,7 +309,7 @@ class ConfigTests(unittest.TestCase):
         ) as print_message:
             self.assertEqual(vt.main(["--version"]), 0)
         acquire.assert_not_called()
-        print_message.assert_called_once_with("VoiceTyping 2.1.1")
+        print_message.assert_called_once_with("VoiceTyping 2.2.0")
 
     def test_save_is_private_atomic_and_preserves_other_settings(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -342,6 +342,32 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(vt.main(["--settings"]), 0)
             acquire.assert_not_called()
 
+    def test_non_gnome_wayland_starts_tray_before_requesting_portal_access(self):
+        previous_handler = vt.signal.getsignal(vt.signal.SIGUSR1)
+        environment = SimpleNamespace(is_wayland=True, is_gnome=False, is_x11=False)
+        app = vt.VoiceTypingApp(FakeClient(), FakePanel())
+        bootstrap = mock.Mock()
+
+        with mock.patch.object(vt, "acquire_pid_file", return_value=True), mock.patch.object(
+            vt, "release_pid_file"
+        ), mock.patch("desktop_integration.setup_global_shortcut", return_value="not_gnome"), mock.patch(
+            "desktop_environment.detect_desktop_environment", return_value=environment
+        ), mock.patch("setup_shortcut.get_shortcut", return_value="<Ctrl>F9"), mock.patch.object(
+            vt, "get_api_key", return_value="key"
+        ), mock.patch.object(vt, "load_config", return_value={"auto_paste": True, "live_transcription": False}), mock.patch.object(
+            vt, "create_client", return_value=FakeClient()
+        ), mock.patch.object(vt, "NotificationPanel", return_value=FakePanel()), mock.patch.object(
+            vt, "VoiceTypingApp", return_value=app
+        ), mock.patch("desktop_integration.build_paste_action") as build_paste, mock.patch.object(
+            vt, "_start_wayland_portal_bootstrap", bootstrap
+        ), mock.patch.object(vt, "run_tray") as run_tray:
+            self.assertEqual(vt.main([]), 0)
+
+        bootstrap.assert_called_once_with(app, environment, "CTRL+F9", auto_paste=True)
+        build_paste.assert_not_called()
+        run_tray.assert_called_once_with(app)
+        self.assertEqual(vt.signal.getsignal(vt.signal.SIGUSR1), previous_handler)
+
     def test_startup_toggle_is_buffered_and_cleanup_stays_signal_safe(self):
         previous_handler = vt.signal.getsignal(vt.signal.SIGUSR1)
         holder = {}
@@ -371,12 +397,15 @@ class ConfigTests(unittest.TestCase):
 
         with mock.patch.object(vt, "acquire_pid_file", return_value=True), mock.patch.object(
             vt, "release_pid_file", side_effect=release_pid
-        ), mock.patch("setup_shortcut.setup_gnome_shortcut", return_value="active"), mock.patch.object(
+        ), mock.patch("desktop_integration.setup_global_shortcut", return_value="active"), mock.patch.object(
             vt, "get_api_key", side_effect=key_during_startup
         ), mock.patch.object(vt, "create_client", return_value=object()), mock.patch.object(
             vt, "NotificationPanel", return_value=FakePanel()
         ), mock.patch.object(vt, "VoiceTypingApp", DummyApp), mock.patch.object(
             vt, "run_tray", side_effect=run_tray
+        ), mock.patch(
+            "desktop_environment.detect_desktop_environment",
+            return_value=SimpleNamespace(is_wayland=False, is_gnome=False, is_x11=False),
         ):
             self.assertEqual(vt.main([]), 0)
 
@@ -386,6 +415,18 @@ class ConfigTests(unittest.TestCase):
 
 
 class AppStateTests(unittest.TestCase):
+    def test_late_portal_resources_are_closed_after_shutdown(self):
+        app = vt.VoiceTypingApp(FakeClient(), FakePanel())
+        app.state = "shutting_down"
+        listener = mock.Mock()
+        paste_action = mock.Mock()
+
+        self.assertFalse(app.install_listener_if_running(listener))
+        self.assertFalse(app.install_paste_action_if_running(paste_action))
+
+        listener.stop.assert_called_once_with()
+        paste_action.close.assert_called_once_with()
+
     def test_microphone_callback_records_and_feeds_compact_signal_to_panel(self):
         panel = FakePanel()
         app = vt.VoiceTypingApp(FakeClient(), panel)

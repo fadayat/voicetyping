@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Linux voice-to-text utility: F8 records, Gemini transcribes, clipboard receives text."""
+"""Linux voice-to-text utility: a shortcut records, Gemini transcribes, clipboard receives text."""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ sd = _import_sounddevice()
 
 
 APP_NAME = "VoiceTyping"
-APP_VERSION = "2.1.1"
+APP_VERSION = "2.2.0"
 SAMPLE_RATE = 16_000
 CHANNELS = 1
 MIN_RECORDING_SECONDS = 0.25
@@ -727,6 +727,7 @@ class VoiceTypingApp:
         max_recording_seconds: float = MAX_RECORDING_SECONDS,
         live_factory: Callable | None = None,
         paste_action: Callable | None = None,
+        shortcut_label: str = "F8",
     ):
         self.client = client
         self.panel = panel
@@ -744,6 +745,7 @@ class VoiceTypingApp:
         self._shutdown = threading.Event()
         self._live_factory = live_factory
         self._paste_action = paste_action
+        self.shortcut_label = shortcut_label
         self._live_session = None
         self._processing_live = None
         self._capture_context: _CaptureContext | None = None
@@ -868,8 +870,12 @@ class VoiceTypingApp:
             if live_session is not None:
                 live_session.cancel()
             return False
-        self.panel.show("Səs yazılır — dayandırmaq üçün F8", color="#f38ba8", bg_color="#302030")
-        print("Recording started. Press F8 to stop.")
+        self.panel.show(
+            f"Səs yazılır — dayandırmaq üçün {self.shortcut_label}",
+            color="#f38ba8",
+            bg_color="#302030",
+        )
+        print(f"Recording started. Press {self.shortcut_label} to stop.")
         return True
 
     def _duration_limit_reached(self) -> None:
@@ -978,6 +984,7 @@ class VoiceTypingApp:
     ) -> None:
         stopped_at = stopped_at if stopped_at is not None else time.monotonic()
         route = "batch"
+        fallback_reason = None
         try:
             self._close_stream(stream)
             live_failed = False
@@ -985,6 +992,7 @@ class VoiceTypingApp:
                 live_failed = chunks.live_failed
                 chunks = chunks.seal_and_snapshot()
             if live_session is not None and live_failed:
+                fallback_reason = "feed_failed"
                 live_session.cancel()
                 with self._lock:
                     self._live_disabled_until = (
@@ -1009,17 +1017,72 @@ class VoiceTypingApp:
 
             assert audio_data is not None
             text = ""
+            # Snapshot the destination while transcription runs. Clipboard
+            # helpers can briefly change focus, so this must finish before copy.
+            paste_action = self._paste_action
+            prepare_paste = getattr(paste_action, "prepare", None)
+            prepared_result = {}
+            prepared_event = threading.Event()
+            preparation_thread = None
+            if callable(prepare_paste):
+                def safe_label(value):
+                    label = "".join(
+                        char if char.isascii() and (char.isalnum() or char == "_") else "_"
+                        for char in str(value)
+                    )
+                    return label[:64] or "unknown"
+
+                def start_preparation():
+                    nonlocal preparation_thread
+
+                    def prepare_in_background():
+                        try:
+                            prepared_result["action"] = prepare_paste()
+                        except Exception as error:
+                            prepared_result["error"] = safe_label(type(error).__name__)
+                        finally:
+                            prepared_event.set()
+
+                    preparation_thread = threading.Thread(
+                        target=prepare_in_background,
+                        daemon=True,
+                        name="paste-preparation",
+                    )
+                    preparation_thread.start()
+
+                if live_session is not None and not live_failed:
+                    start_preparation()
+            else:
+                prepared_result["action"] = paste_action
+
             if live_session is not None and not live_failed:
                 try:
                     text = (live_session.finish(timeout=LIVE_FINALIZE_TIMEOUT_SECONDS) or "").strip()
                 except Exception as error:
+                    error_type = "".join(
+                        char if char.isascii() and (char.isalnum() or char == "_") else "_"
+                        for char in type(error).__name__
+                    )[:64] or "unknown"
+                    fallback_reason = f"finish_failed_{error_type}"
                     print(f"Live finalization failed ({type(error).__name__}); using batch.")
                 if text:
                     route = "live"
                 else:
+                    if fallback_reason is None:
+                        failure_reason = getattr(live_session, "failure_reason", None)
+                        if isinstance(failure_reason, str) and failure_reason:
+                            safe_reason = "".join(
+                                char if char.isascii() and (char.isalnum() or char == "_") else "_"
+                                for char in failure_reason
+                            )[:64] or "unknown"
+                            fallback_reason = f"live_{safe_reason}"
+                        else:
+                            fallback_reason = "live_incomplete"
                     with self._lock:
                         self._live_disabled_until = time.monotonic() + LIVE_FAILURE_COOLDOWN_SECONDS
                     print("Live transcription incomplete; using the full recording with batch fallback.")
+            elif live_session is None and fallback_reason is None:
+                fallback_reason = "live_unavailable"
             if self._shutdown.is_set():
                 return
             if not text:
@@ -1029,6 +1092,8 @@ class VoiceTypingApp:
             if not text:
                 self.panel.show("Danışıq başa düşülmədi — yenidən sınayın", color="#fab387", bg_color="#2d2520", hide_after=3000)
                 return
+            if preparation_thread is None and callable(prepare_paste):
+                start_preparation()
             self.last_text = text
             result_at = time.monotonic()
             self.last_timing = {
@@ -1036,21 +1101,38 @@ class VoiceTypingApp:
                 "audio_seconds": round(len(audio_data) / SAMPLE_RATE, 3),
                 "stop_to_result_ms": round((result_at - stopped_at) * 1000),
             }
+            if fallback_reason is not None:
+                self.last_timing["fallback_reason"] = fallback_reason
+            if live_session is not None:
+                try:
+                    live_timings = live_session.timings
+                except Exception:
+                    live_timings = {}
+                if isinstance(live_timings, dict):
+                    for name in ("connect_ms", "finalize_ms", "stream_ms"):
+                        value = live_timings.get(name)
+                        if isinstance(value, (int, float)):
+                            self.last_timing[name] = round(value)
             if self._shutdown.is_set():
                 return
-            prepared_paste = self._paste_action
-            prepare_paste = getattr(prepared_paste, "prepare", None)
-            if callable(prepare_paste):
-                try:
-                    # Capture the destination before copying, because clipboard
-                    # ownership may briefly move focus to the clipboard helper.
-                    prepared_paste = prepare_paste()
-                except Exception as error:
+            prepared_paste = None
+            if preparation_thread is not None:
+                if prepared_event.wait(0.25):
+                    if "error" in prepared_result:
+                        error_type = prepared_result["error"]
+                        print(
+                            f"Automatic paste preparation failed ({error_type}); "
+                            "text remains on the clipboard."
+                        )
+                    else:
+                        prepared_paste = prepared_result.get("action")
+                else:
                     print(
-                        f"Automatic paste preparation failed ({type(error).__name__}); "
+                        "Automatic paste preparation timed out (TimeoutError); "
                         "text remains on the clipboard."
                     )
-                    prepared_paste = None
+            else:
+                prepared_paste = prepared_result.get("action")
             try:
                 copy_to_clipboard(text)
             except Exception as error:
@@ -1081,7 +1163,11 @@ class VoiceTypingApp:
             print(
                 f"Transcription copied to clipboard. route={route}; "
                 f"audio_seconds={self.last_timing['audio_seconds']}; "
-                f"stop_to_copy_ms={self.last_timing['stop_to_copy_ms']}"
+                f"stop_to_copy_ms={self.last_timing['stop_to_copy_ms']}; "
+                f"fallback_reason={self.last_timing.get('fallback_reason', 'none')}; "
+                f"connect_ms={self.last_timing.get('connect_ms', 'n/a')}; "
+                f"finalize_ms={self.last_timing.get('finalize_ms', 'n/a')}; "
+                f"stream_ms={self.last_timing.get('stream_ms', 'n/a')}"
             )
         except Exception as error:
             print(f"Transcription failed ({type(error).__name__}, status={getattr(error, 'code', 'unknown')}).")
@@ -1129,6 +1215,54 @@ class VoiceTypingApp:
             pass
         return True
 
+    def install_listener_if_running(self, listener) -> bool:
+        with self._lock:
+            if self.state == "shutting_down":
+                accepted = False
+                previous = None
+            else:
+                accepted = True
+                previous = self.listener
+                self.listener = listener
+        if not accepted:
+            try:
+                listener.stop()
+            except Exception:
+                pass
+            return False
+        if previous is not None and previous is not listener:
+            try:
+                previous.stop()
+            except Exception:
+                pass
+        return True
+
+    def install_paste_action_if_running(self, paste_action) -> bool:
+        with self._lock:
+            if self.state == "shutting_down":
+                accepted = False
+                previous = None
+            else:
+                accepted = True
+                previous = self._paste_action
+                self._paste_action = paste_action
+        if not accepted:
+            close = getattr(paste_action, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+            return False
+        if previous is not None and previous is not paste_action:
+            close = getattr(previous, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+        return True
+
     def shutdown(self) -> None:
         with self._lock:
             if self.state == "shutting_down":
@@ -1145,6 +1279,9 @@ class VoiceTypingApp:
             live_sessions = (self._live_session, self._processing_live)
             self._live_session = None
             listener = self.listener
+            self.listener = None
+            paste_action = self._paste_action
+            self._paste_action = None
             worker = self.worker
         if timer:
             timer.cancel()
@@ -1156,6 +1293,12 @@ class VoiceTypingApp:
                 live_session.cancel()
         if listener is not None:
             listener.stop()
+        close_paste_backend = getattr(paste_action, "close", None)
+        if callable(close_paste_backend):
+            try:
+                close_paste_backend()
+            except Exception:
+                pass
         if worker is None or not worker.is_alive():
             try:
                 self.client.close()
@@ -1195,6 +1338,58 @@ def run_tray(app: VoiceTypingApp) -> None:
     pystray.Icon("voicetyping", create_tray_image(), APP_NAME, menu).run()
 
 
+def _start_wayland_portal_bootstrap(app, environment, shortcut, *, auto_paste: bool):
+    """Request optional Wayland permissions without blocking tray startup."""
+    def bootstrap():
+        try:
+            from desktop_integration import build_wayland_shortcut_listener
+
+            if not app._shutdown.is_set():
+                listener = build_wayland_shortcut_listener(shortcut, app.toggle, environment)
+                if listener is not None:
+                    if listener.start():
+                        if app.install_listener_if_running(listener):
+                            print(f"Wayland global shortcut ready ({shortcut}).")
+                    else:
+                        print("Global shortcut is unavailable; use the tray or bind the toggle command manually.")
+        except Exception as error:
+            print(
+                f"Wayland global shortcut unavailable ({type(error).__name__}); "
+                "use the tray or bind the toggle command manually."
+            )
+
+        if not auto_paste or app._shutdown.is_set():
+            return
+        keyboard = None
+        try:
+            from desktop_integration import build_paste_action
+            from xdg_portal import RemoteDesktopKeyboard
+
+            keyboard = RemoteDesktopKeyboard()
+            if not keyboard.start():
+                keyboard.close()
+                print("Wayland keyboard permission was not granted; text will remain on the clipboard.")
+                return
+            paste_action = build_paste_action(True, environment, portal_keyboard=keyboard)
+            if paste_action is None:
+                keyboard.close()
+                print("Automatic paste is unavailable; text will remain on the clipboard.")
+                return
+            if app.install_paste_action_if_running(paste_action):
+                print("Wayland portal paste is ready.")
+        except Exception as error:
+            if keyboard is not None:
+                keyboard.close()
+            print(
+                f"Automatic paste unavailable ({type(error).__name__}); "
+                "text will remain on the clipboard."
+            )
+
+    thread = threading.Thread(target=bootstrap, daemon=True, name="voicetyping-portal-bootstrap")
+    thread.start()
+    return thread
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv == ["--version"]:
@@ -1227,16 +1422,27 @@ def main(argv: list[str] | None = None) -> int:
 
     panel = None
     app = None
+    portal_setup_pending = False
     try:
         try:
-            from setup_shortcut import SHORTCUT_ACTIVE, SHORTCUT_NOT_GNOME, setup_gnome_shortcut
+            from desktop_environment import detect_desktop_environment
+            from desktop_integration import setup_global_shortcut
+            from setup_shortcut import SHORTCUT_ACTIVE, SHORTCUT_NOT_GNOME, get_shortcut
+            from shortcuts import parse_shortcut
 
-            shortcut_status = setup_gnome_shortcut()
+            desktop_environment = detect_desktop_environment()
+            shortcut_status = setup_global_shortcut(desktop_environment)
+            shortcut_spec = parse_shortcut(get_shortcut())
+            shortcut = shortcut_spec.to_xdg_trigger()
+            shortcut_label = shortcut_spec.to_label()
         except Exception as error:
             print(f"Global shortcut setup unavailable ({type(error).__name__}).")
             shortcut_status = "error"
             SHORTCUT_ACTIVE = "active"
             SHORTCUT_NOT_GNOME = "not_gnome"
+            desktop_environment = None
+            shortcut = "F8"
+            shortcut_label = "F8"
 
         api_key = get_api_key()
         if not api_key:
@@ -1245,25 +1451,41 @@ def main(argv: list[str] | None = None) -> int:
 
         panel = NotificationPanel()
         config = load_config()
+        portal_setup_pending = bool(
+            config.get("auto_paste", True)
+            and desktop_environment is not None
+            and desktop_environment.is_wayland
+            and not desktop_environment.is_gnome
+        )
+        portal_shortcut_pending = bool(
+            shortcut_status == SHORTCUT_NOT_GNOME
+            and desktop_environment is not None
+            and desktop_environment.is_wayland
+        )
         live_factory = None
         if config.get("live_transcription", True):
             live_factory = lambda: create_live_transcriber(api_key)
         paste_action = None
-        if config.get("auto_paste", True):
-            try:
-                from auto_paste import AutomaticPaste
+        try:
+            from desktop_integration import build_paste_action
 
-                paste_action = AutomaticPaste()
-            except Exception as error:
-                print(
-                    f"Automatic paste unavailable ({type(error).__name__}); "
-                    "text will remain on the clipboard."
+            if not portal_setup_pending:
+                paste_action = build_paste_action(
+                    config.get("auto_paste", True), desktop_environment
                 )
+            if config.get("auto_paste", True) and paste_action is None and not portal_setup_pending:
+                print("Automatic paste is unavailable; text will remain on the clipboard.")
+        except Exception as error:
+            print(
+                f"Automatic paste unavailable ({type(error).__name__}); "
+                "text will remain on the clipboard."
+            )
         app = VoiceTypingApp(
             create_client(api_key),
             panel,
             live_factory=live_factory,
             paste_action=paste_action,
+            shortcut_label=shortcut_label,
         )
 
         def signal_handler(sig, frame) -> None:
@@ -1273,28 +1495,68 @@ def main(argv: list[str] | None = None) -> int:
         if pending_toggles % 2:
             threading.Thread(target=app.toggle, daemon=True, name="startup-toggle").start()
 
-        if shortcut_status == SHORTCUT_NOT_GNOME:
+        from desktop_integration import should_start_x11_listener
+
+        if should_start_x11_listener(shortcut_status, desktop_environment):
             try:
                 from pynput import keyboard as pynput_keyboard
             except Exception as error:
                 print(f"Global keyboard listener unavailable ({type(error).__name__}).")
                 pynput_keyboard = None
 
+            pressed_modifier_keys = {}
+            from shortcuts import parse_shortcut, pynput_key_name, pynput_modifier
+
+            shortcut_spec = parse_shortcut(shortcut)
+
             def on_press(key) -> None:
-                if pynput_keyboard is not None and key == pynput_keyboard.Key.f8:
+                modifier = pynput_modifier(key)
+                if modifier is not None:
+                    key_id = str(getattr(key, "name", key)).casefold()
+                    pressed_modifier_keys[key_id] = modifier
+                    return
+                key_name = pynput_key_name(key)
+                if key_name is not None and shortcut_spec.matches(
+                    key_name, set(pressed_modifier_keys.values())
+                ):
                     app.toggle()
+
+            def on_release(key) -> None:
+                modifier = pynput_modifier(key)
+                if modifier is not None:
+                    key_id = str(getattr(key, "name", key)).casefold()
+                    pressed_modifier_keys.pop(key_id, None)
 
             if pynput_keyboard is not None:
                 try:
-                    app.listener = pynput_keyboard.Listener(on_press=on_press)
+                    app.listener = pynput_keyboard.Listener(
+                        on_press=on_press,
+                        on_release=on_release,
+                    )
                     app.listener.start()
                 except Exception as error:
                     print(f"Global keyboard listener unavailable ({type(error).__name__}).")
+        elif portal_shortcut_pending:
+            print("Wayland shortcut permission will be requested in the background.")
+        elif shortcut_status == SHORTCUT_NOT_GNOME:
+            print("Global shortcut is not configured; use the tray or bind the toggle command manually.")
         elif shortcut_status != SHORTCUT_ACTIVE:
-            print("F8 shortcut is inactive; use the tray menu or resolve the GNOME shortcut warning.")
+            print(f"{shortcut_label} shortcut is inactive; use the tray menu or resolve the GNOME shortcut warning.")
 
-        panel.show("Hazırdır — başlamaq üçün F8 basın", color="#a6e3a1", bg_color="#1e2e1e", hide_after=2500)
-        print("VoiceTyping is ready. Press F8 to start or stop recording.")
+        panel.show(
+            f"Hazırdır — başlamaq üçün {shortcut_label} basın",
+            color="#a6e3a1",
+            bg_color="#1e2e1e",
+            hide_after=2500,
+        )
+        print(f"VoiceTyping is ready. Press {shortcut_label} to start or stop recording.")
+        if portal_shortcut_pending or portal_setup_pending:
+            _start_wayland_portal_bootstrap(
+                app,
+                desktop_environment,
+                shortcut,
+                auto_paste=config.get("auto_paste", True),
+            )
         try:
             run_tray(app)
         except KeyboardInterrupt:
@@ -1308,12 +1570,14 @@ def main(argv: list[str] | None = None) -> int:
                 pass
         return 0
     finally:
-        if app is not None:
-            app.shutdown()
-        elif panel is not None:
-            panel.close()
-        release_pid_file()
-        signal.signal(signal.SIGUSR1, previous_usr1_handler)
+        try:
+            if app is not None:
+                app.shutdown()
+            elif panel is not None:
+                panel.close()
+        finally:
+            release_pid_file()
+            signal.signal(signal.SIGUSR1, previous_usr1_handler)
 
 
 if __name__ == "__main__":
