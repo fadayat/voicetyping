@@ -39,7 +39,13 @@ class FakeSession:
             self.activity_end.set()
 
     async def receive(self):
-        if not self.early:
+        if self.early:
+            # Model an invalid completion after streaming has started but
+            # before the caller ends the activity. Do not depend on event-loop
+            # task scheduling order, which differs across CI runners.
+            while not self.first_audio.is_set():
+                await asyncio.sleep(0)
+        else:
             await self.activity_end.wait()
         if self.hang:
             await asyncio.Event().wait()
