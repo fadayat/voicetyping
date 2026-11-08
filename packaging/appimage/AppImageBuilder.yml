@@ -19,8 +19,8 @@ AppDir:
     name: VoiceTyping
     icon: voicetyping
     version: 2.2.0
-    exec: usr/bin/voicetyping-launcher
-    exec_args: "$@"
+    exec: usr/bin/python3
+    exec_args: "$APPDIR/usr/src/voicetyping/voicetyping.py $@"
 
   apt:
     arch:

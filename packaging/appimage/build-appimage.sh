@@ -7,6 +7,8 @@ OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/dist}"
 BUILDER="${APPIMAGE_BUILDER:-appimage-builder}"
 APPIMAGETOOL="${APPIMAGETOOL:-}"
 APPIMAGE_RUNTIME="${APPIMAGE_RUNTIME:-}"
+BUILDER_APPRUN="${APPIMAGE_BUILDER_APPRUN:-}"
+BUILDER_HOOKS="${APPIMAGE_BUILDER_HOOKS:-}"
 BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/voicetyping-appimage.XXXXXX")"
 
 cleanup() {
@@ -26,6 +28,16 @@ fi
 if [[ -z "$APPIMAGE_RUNTIME" || ! -r "$APPIMAGE_RUNTIME" ]]; then
     echo "APPIMAGE_RUNTIME must point to a readable AppImage type-2 runtime." >&2
     exit 2
+fi
+if [[ -n "$BUILDER_APPRUN" || -n "$BUILDER_HOOKS" ]]; then
+    if [[ ! -r "$BUILDER_APPRUN" || ! -r "$BUILDER_HOOKS" ]]; then
+        echo "APPIMAGE_BUILDER_APPRUN and APPIMAGE_BUILDER_HOOKS must both point to readable files." >&2
+        exit 2
+    fi
+    BUILDER_CACHE="$BUILD_DIR/appimage-build/AppRun/v2.0.0"
+    mkdir -p "$BUILDER_CACHE"
+    install -m 0755 "$BUILDER_APPRUN" "$BUILDER_CACHE/AppRun-Release-x86_64"
+    install -m 0644 "$BUILDER_HOOKS" "$BUILDER_CACHE/libapprun_hooks-Release-x86_64.so"
 fi
 if [[ "$BUILDER" == */* ]]; then
     if [[ ! -x "$BUILDER" ]]; then
@@ -48,6 +60,15 @@ sed -i -E "s/version: [0-9]+\.[0-9]+\.[0-9]+/version: $VERSION/" "$BUILD_DIR/App
         "$BUILDER" --recipe "$BUILD_DIR/AppImageBuilder.yml" \
         --skip-tests --skip-appimage
 )
+
+if [[ ! -f "$BUILD_DIR/AppDir/AppRun.env" ]]; then
+    echo "appimage-builder did not create AppRun.env." >&2
+    exit 1
+fi
+sed -i \
+    -e 's|^APPDIR_EXEC_PATH=.*|APPDIR_EXEC_PATH=$APPDIR/usr/bin/voicetyping-launcher|' \
+    -e 's|^APPDIR_EXEC_ARGS=.*|APPDIR_EXEC_ARGS=$@|' \
+    "$BUILD_DIR/AppDir/AppRun.env"
 
 PACKAGED_DIR="$BUILD_DIR/packaged"
 mkdir -p "$PACKAGED_DIR"

@@ -120,9 +120,20 @@ jobs:
             https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
           echo "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  /tmp/runtime-x86_64" | sha256sum --check
           chmod +x /tmp/runtime-x86_64
+          curl --fail --location --retry 3 \
+            --output /tmp/AppRun-Release-x86_64 \
+            https://github.com/AppImageCrafters/AppRun/releases/download/v2.0.0/AppRun-Release-x86_64
+          echo "c74e7e3a085c624260f0d144c02968d00fa9383f5d7fc46b32f1dc80d371d7ff  /tmp/AppRun-Release-x86_64" | sha256sum --check
+          chmod +x /tmp/AppRun-Release-x86_64
+          curl --fail --location --retry 3 \
+            --output /tmp/libapprun_hooks-Release-x86_64.so \
+            https://github.com/AppImageCrafters/AppRun/releases/download/v2.0.0/libapprun_hooks-Release-x86_64.so
+          echo "1f64dd2161be3242f106c891b2daf27bbdd2103c20b28f57f61a56cdccb1eb6a  /tmp/libapprun_hooks-Release-x86_64.so" | sha256sum --check
       - name: Build AppImage
         env:
           APPIMAGE_BUILDER: /tmp/appimage-builder.AppImage
+          APPIMAGE_BUILDER_APPRUN: /tmp/AppRun-Release-x86_64
+          APPIMAGE_BUILDER_HOOKS: /tmp/libapprun_hooks-Release-x86_64.so
           APPIMAGETOOL: /tmp/appimagetool-x86_64.AppImage
           APPIMAGE_RUNTIME: /tmp/runtime-x86_64
         run: ./packaging/appimage/build-appimage.sh "${{ inputs.version }}"
