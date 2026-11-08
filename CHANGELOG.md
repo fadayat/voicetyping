@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.2.0
+
+### Improved
+
+- Repacked AppImages with a static type-2 runtime so they run without host
+  `libfuse.so.2`.
+- Made the AppImage shortcut send its toggle signal without starting Python,
+  removing the noticeable delay after pressing the recording shortcut.
+- Added native microphone sample-rate fallback when 16 kHz capture is
+  unavailable, resampling native input for Gemini Live while retaining the
+  original audio for batch fallback.
+- Added a locked Python dependency set shared by development and package builds.
+- Selected shortcut and paste behavior from the active desktop session.
+- Added X11 keyboard injection for paste and kept unsupported Wayland sessions
+  on the clipboard fallback.
+- Added XDG portal shortcuts and permission-based keyboard paste for other
+  Wayland desktops, with clipboard fallback when unavailable or declined.
+- Unified custom shortcut parsing across GNOME, XDG portals, and X11.
+- Moved Wayland permission requests to the background so the tray stays usable.
+- Saved legacy flat source modules as a rollback snapshot on first migration,
+  then switched the active release atomically.
+- Closed failed Wayland keyboard sessions and disabled broken automatic paste.
+- Installed both X11 and Wayland clipboard tools in Debian packages.
+
 ## 2.1.1
 
 ### Added

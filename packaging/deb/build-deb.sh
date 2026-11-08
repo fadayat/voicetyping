@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="${1:-2.1.1}"
+VERSION="${1:-2.2.0}"
 ARCH="${ARCH:-amd64}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/dist}"
@@ -51,7 +51,11 @@ for source_file in \
     voice_overlay.py \
     voice_visual.py \
     voicetyping_toggle.py \
-    setup_shortcut.py; do
+    setup_shortcut.py \
+    desktop_environment.py \
+    desktop_integration.py \
+    shortcuts.py \
+    xdg_portal.py; do
     install -m 0644 "$PROJECT_DIR/$source_file" "$APP_ROOT/app/$source_file"
 done
 
@@ -86,7 +90,7 @@ Priority: optional
 Architecture: ${ARCH}
 Installed-Size: ${INSTALLED_SIZE}
 Maintainer: fadayat <noreply@github.com>
-Depends: python3 (>= 3.12), python3 (<< 3.13), python3-gi, python3-cairo, python3-tk, gir1.2-gtk-3.0, gir1.2-ayatanaappindicator3-0.1, libportaudio2, libsndfile1, wl-clipboard | xclip
+Depends: python3 (>= 3.12), python3 (<< 3.13), python3-gi, python3-cairo, python3-tk, gir1.2-gtk-3.0, gir1.2-ayatanaappindicator3-0.1, libportaudio2, libsndfile1, wl-clipboard, xclip
 Homepage: https://voicetyping1.vercel.app/
 Description: F8 voice typing for Linux
  VoiceTyping records speech between two F8 presses, transcribes it with Gemini,

@@ -1,13 +1,14 @@
-"""Paste the existing clipboard once through GNOME's local input API.
+"""Paste the existing clipboard through the active desktop's input API.
 
-No transcript is passed to this module. It neither captures the screen nor
-starts a remote-desktop daemon. A short-lived Mutter input session emits one
-paste shortcut, releases its keys, and closes. Mutter's API is private: on unsupported
-desktops/versions the caller must retain the clipboard as the manual fallback.
+No transcript is passed to this module. The GNOME backend uses a short-lived
+Mutter input session, X11 uses pynput, and other Wayland sessions can use a
+user-approved XDG Remote Desktop portal session. Unsupported paths leave the
+transcript on the clipboard.
 """
 
 from __future__ import annotations
 
+import threading
 import time
 from functools import partial
 from pathlib import Path
@@ -45,6 +46,13 @@ def _connect_accessibility_bus(Gio, timeout_ms):
     )
 
 
+def _load_gio_modules():
+    """Load GNOME's optional D-Bus bindings only when that backend is used."""
+    from gi.repository import Gio, GLib
+
+    return Gio, GLib
+
+
 def _active_application_pids() -> frozenset[int]:
     """Query shallow window states and process IDs, never titles or text.
 
@@ -52,7 +60,6 @@ def _active_application_pids() -> frozenset[int]:
     There is no tree traversal below top-level windows and no fixed sleep. An
     unavailable, slow, or unusually large accessibility tree is inconclusive.
     """
-    from gi.repository import Gio, GLib
     deadline = time.monotonic() + FOCUS_LOOKUP_SECONDS
 
     def timeout_ms():
@@ -61,6 +68,8 @@ def _active_application_pids() -> frozenset[int]:
             raise TimeoutError("focus lookup exceeded budget")
         return min(20, remaining)
 
+    timeout_ms()
+    Gio, GLib = _load_gio_modules()
     connection = _connect_accessibility_bus(Gio, timeout_ms())
     try:
         def call(name, path, interface, method, parameters=None):
@@ -195,31 +204,124 @@ class _MutterKeyboard:
         self.close()
 
 
-def paste_clipboard(*, terminal: bool = False) -> None:
+def _load_pynput_keyboard():
+    """Load X11 keyboard injection lazily; Wayland does not allow this path."""
+    from pynput.keyboard import Controller, Key, KeyCode
+
+    return Controller, Key, KeyCode
+
+
+class _X11Keyboard:
+    """Send one paste shortcut through X11's user-session input API."""
+
+    def __enter__(self):
+        Controller, Key, KeyCode = _load_pynput_keyboard()
+        self.controller = Controller()
+        self.keys = {
+            KEY_LEFTCTRL: Key.ctrl_l,
+            KEY_LEFTSHIFT: Key.shift_l,
+            KEY_V: KeyCode.from_char("v"),
+        }
+        return self
+
+    def key(self, code: int, pressed: bool) -> None:
+        key = self.keys[code]
+        if pressed:
+            self.controller.press(key)
+        else:
+            self.controller.release(key)
+
+    def __exit__(self, *_):
+        return None
+
+
+def _emit_paste(keyboard, *, terminal: bool = False, settle_after_release: float = 0.0) -> None:
     """Emit Ctrl+Shift+V for a terminal, otherwise Ctrl+V; never Enter.
 
     Do not retry an uncertain paste: it may already have reached the editor.
     Key releases and session cleanup are attempted even after an input error.
     Success means the shortcut was emitted, not that the target accepted paste.
     """
-    with _MutterKeyboard() as keyboard:
-        attempted = []
-        try:
-            codes = (KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_V) if terminal else (KEY_LEFTCTRL, KEY_V)
-            for code in codes:
-                # A failed D-Bus reply does not prove the press was not delivered.
-                attempted.append(code)
-                keyboard.key(code, True)
-                time.sleep(0.01)
-        finally:
-            release_error = None
-            for code in reversed(attempted):
-                try:
-                    keyboard.key(code, False)
-                except Exception as error:
-                    release_error = error
+    attempted = []
+    try:
+        codes = (KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_V) if terminal else (KEY_LEFTCTRL, KEY_V)
+        for code in codes:
+            # A failed input acknowledgement does not prove the press was not delivered.
+            attempted.append(code)
+            keyboard.key(code, True)
+            time.sleep(0.01)
+    finally:
+        release_error = None
+        for code in reversed(attempted):
+            try:
+                keyboard.key(code, False)
+            except Exception as error:
+                release_error = error
+        if settle_after_release > 0:
             # Mutter queues input for the compositor's next frame. Let the
             # release events reach the client before destroying the device.
-            time.sleep(0.04)
-            if release_error is not None:
-                raise release_error
+            time.sleep(settle_after_release)
+        if release_error is not None:
+            raise release_error
+
+
+def paste_clipboard(*, terminal: bool = False) -> None:
+    """Paste the existing clipboard through GNOME's Mutter input session."""
+    with _MutterKeyboard() as keyboard:
+        _emit_paste(keyboard, terminal=terminal, settle_after_release=0.04)
+
+
+def paste_clipboard_x11(*, terminal: bool = False) -> None:
+    """Paste the existing clipboard through X11's user-session input API."""
+    with _X11Keyboard() as keyboard:
+        _emit_paste(keyboard, terminal=terminal)
+
+
+class X11AutomaticPaste:
+    """Prepare an X11 paste action while preserving focused-terminal routing."""
+
+    def prepare(self):
+        return partial(paste_clipboard_x11, terminal=is_terminal_focused())
+
+    def __call__(self):
+        self.prepare()()
+
+
+class PortalAutomaticPaste:
+    """Use a pre-approved XDG Remote Desktop session on Wayland."""
+
+    def __init__(self, keyboard_session):
+        self.keyboard_session = keyboard_session
+        self._lock = threading.Lock()
+        self._disabled = False
+
+    def prepare(self):
+        with self._lock:
+            if self._disabled:
+                return None
+        return partial(self._paste, terminal=is_terminal_focused())
+
+    def _paste(self, *, terminal: bool = False):
+        with self._lock:
+            if self._disabled:
+                return
+        try:
+            self.keyboard_session.paste(terminal=terminal)
+        except Exception:
+            self.close()
+            raise
+
+    def __call__(self):
+        prepared = self.prepare()
+        if prepared is not None:
+            prepared()
+
+    def close(self):
+        with self._lock:
+            if self._disabled:
+                return
+            self._disabled = True
+        try:
+            self.keyboard_session.close()
+        except Exception:
+            pass

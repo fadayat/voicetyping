@@ -8,7 +8,7 @@ Press `F8`, speak, then press it again. VoiceTyping transcribes the recording
 with Gemini and pastes the final text into the field you kept focused.
 
 [Website](https://voicetyping1.vercel.app/) ·
-[VoiceTyping 2.1.1](https://github.com/fadayat/voicetyping/releases/tag/v2.1.1) ·
+[VoiceTyping 2.2.0](https://github.com/fadayat/voicetyping/releases/tag/v2.2.0) ·
 [Changelog](CHANGELOG.md) ·
 [MIT license](LICENSE)
 
@@ -41,16 +41,16 @@ You need Linux, Python 3.10 or newer, an internet connection, and your own
 **Ubuntu 24.04 on x86_64:**
 
 ```bash
-wget https://github.com/fadayat/voicetyping/releases/download/v2.1.1/voicetyping_2.1.1-1_ubuntu24.04_amd64.deb
-sudo apt install ./voicetyping_2.1.1-1_ubuntu24.04_amd64.deb
+wget https://github.com/fadayat/voicetyping/releases/download/v2.2.0/voicetyping_2.2.0-1_ubuntu24.04_amd64.deb
+sudo apt install ./voicetyping_2.2.0-1_ubuntu24.04_amd64.deb
 ```
 
 **Other modern x86_64 Linux distributions:**
 
 ```bash
-wget https://github.com/fadayat/voicetyping/releases/download/v2.1.1/VoiceTyping-2.1.1-x86_64.AppImage
+wget https://github.com/fadayat/voicetyping/releases/download/v2.2.0/VoiceTyping-2.2.0-x86_64.AppImage
 mkdir -p ~/.local/bin
-install -m 0755 VoiceTyping-2.1.1-x86_64.AppImage ~/.local/bin/VoiceTyping.AppImage
+install -m 0755 VoiceTyping-2.2.0-x86_64.AppImage ~/.local/bin/VoiceTyping.AppImage
 ~/.local/bin/VoiceTyping.AppImage
 ```
 
@@ -67,7 +67,8 @@ the desktop services listed in [Compatibility](#compatibility).
 
 ```bash
 sudo dnf install wl-clipboard xclip portaudio python3-tkinter \
-  python3-gobject python3-cairo gtk3 libappindicator-gtk3 libayatana-appindicator-gtk3
+  python3-gobject python3-cairo gtk3 libappindicator-gtk3 \
+  libayatana-appindicator-gtk3 gcc python3-devel kernel-headers
 ```
 
 ### Debian and Ubuntu
@@ -75,7 +76,16 @@ sudo dnf install wl-clipboard xclip portaudio python3-tkinter \
 ```bash
 sudo apt update
 sudo apt install xclip wl-clipboard libportaudio2 python3-tk python3-gi \
-  python3-gi-cairo gir1.2-gtk-3.0 libappindicator3-1
+  python3-gi-cairo gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 \
+  python3-venv build-essential python3-dev linux-libc-dev
+```
+
+### Arch Linux
+
+```bash
+sudo pacman -S --needed base-devel linux-api-headers python python-pip tk \
+  python-gobject python-cairo gtk3 libappindicator portaudio libsndfile \
+  wl-clipboard xclip
 ```
 
 </details>
@@ -91,14 +101,19 @@ chmod +x install.sh
 
 The installer places VoiceTyping under `~/.local/bin/voicetyping`, adds an
 Applications menu entry and autostart entry, and configures the GNOME shortcut
-when it can do so without replacing an existing shortcut.
+when it can do so without replacing an existing shortcut. Locked Python
+libraries go into a release-specific virtual environment with user site
+packages disabled; system GTK and audio libraries stay owned by the distribution
+package manager. On the first update from a flat source install, the installer
+saves its application modules under `~/.local/bin/voicetyping/releases/` before
+switching to the new release.
 
 ## Use VoiceTyping
 
 1. Launch **VoiceTyping** from the Applications menu.
 2. Enter your Gemini API key on first run.
-3. Focus a text field and press `F8`.
-4. Speak, then press `F8` again. Keep the destination focused until the text is
+3. Focus a text field and press your configured shortcut (`F8` by default).
+4. Speak, then press the shortcut again. Keep the destination focused until the text is
    inserted.
 
 The floating indicator grows with your voice, flows while the transcript is
@@ -109,13 +124,16 @@ does not take keyboard focus.
 
 | Environment | Behavior |
 | --- | --- |
-| **GNOME Wayland** | Best supported. The installer can add the global `F8` shortcut, and automatic paste uses a temporary Mutter input session. |
-| **Other Linux desktops** | Use the tray or in-app `F8` listener while VoiceTyping is running, or bind `voicetyping_toggle.py` as a desktop shortcut. |
+| **GNOME** | The installer can add the configured global shortcut (`F8` by default). Wayland paste uses a temporary Mutter input session; X11 paste uses X11 keyboard input. |
+| **Other X11 desktops** | With an active X11 display, VoiceTyping listens for the configured shortcut and can send the paste shortcut. |
+| **Other Wayland desktops** | VoiceTyping opens the tray first, then requests XDG Desktop Portal permission for the configured shortcut and keyboard paste in the background. If the portal is missing or permission is declined, use the tray and paste from the clipboard. |
 | **Standalone terminals** | Recognized terminals receive `Ctrl+Shift+V`. Unknown or custom terminal setups may need manual paste. |
 | **Editors and ordinary fields** | Receive the standard `Ctrl+V` shortcut. |
 
 GNOME automatic paste relies on a private Mutter API, so a GNOME update can
-change compatibility. The animation requires a composited desktop.
+change compatibility. Other Wayland desktops depend on their Global Shortcuts
+and Remote Desktop portal implementations and the user's permission. The
+animation requires a composited desktop.
 
 ## Privacy and local data
 
@@ -139,6 +157,7 @@ Add optional settings to the existing configuration JSON, then restart the app:
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
+| `"shortcut": "<Ctrl><Alt>F8"` | `"F8"` | Set the global shortcut. Accepts GNOME markup or plus-separated forms such as `Ctrl+Alt+F8`. |
 | `"auto_paste": false` | `true` | Keep the transcript on the clipboard without sending a paste shortcut. |
 | `"live_transcription": false` | `true` | Use the complete-recording batch path. |
 | `"language_codes": []` | Azerbaijani hint | Let Gemini detect the spoken language automatically. |
@@ -163,14 +182,21 @@ Add optional settings to the existing configuration JSON, then restart the app:
 ## Development
 
 ```bash
-python3 -m pip install --user -r requirements.txt
-python3 voicetyping.py
-python3 -m unittest discover -s tests -v
+uv sync --locked
+uv run python voicetyping.py
+uv run python -m unittest discover -s tests
 ```
 
-The app uses Tkinter for API-key setup, GTK3/Cairo for the transparent
-indicator, Google GenAI for transcription, and desktop-specific clipboard and
-shortcut integrations. See [DESIGN.md](DESIGN.md) for the internal design.
+`requirements.txt` is exported from `uv.lock` for package builders. GTK3, Cairo,
+GObject, Tkinter, PortAudio, and clipboard tools remain system dependencies;
+install them with the package manager commands above. The app uses GTK3/Cairo
+for its transparent indicator, Google GenAI for transcription, and XDG Desktop
+Portals or desktop-specific shortcut and paste backends. See [DESIGN.md](DESIGN.md)
+for the internal design.
+
+On a non-GNOME Wayland desktop, `uv run python tests/manual_wayland_portal_smoke.py`
+checks portal permission, the `F8` binding, and clipboard paste in a focused
+test field. It uses a fixed test phrase and needs no microphone or API key.
 
 ## License
 

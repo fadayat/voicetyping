@@ -1,5 +1,6 @@
 import contextlib
 import io
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -102,6 +103,27 @@ class AutomaticPasteAppTests(unittest.TestCase):
                     ),
                     "copied",
                 )
+
+    def test_paste_preparation_overlaps_live_finalization(self):
+        prepared = threading.Event()
+        finish_observed_preparation = threading.Event()
+
+        class GatedLiveSession(FakeLiveSession):
+            def finish(self, timeout):
+                finish_observed_preparation.set() if prepared.wait(1) else None
+                return "live result"
+
+        class GatedPaste:
+            def prepare(self):
+                prepared.set()
+                return lambda: None
+
+        app = self.make_app(paste_action=GatedPaste())
+        with mock.patch.object(vt, "copy_to_clipboard"):
+            self.finish(app, GatedLiveSession())
+
+        self.assertTrue(finish_observed_preparation.is_set())
+        self.assertEqual(app.last_timing.get("route"), "live")
 
     def test_clipboard_failure_does_not_paste(self):
         paste = mock.Mock()

@@ -1,9 +1,11 @@
+import io
 import json
 import os
 import tempfile
 import threading
 import time
 import unittest
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -91,6 +93,28 @@ class AudioValidationTests(unittest.TestCase):
         wav = vt.encode_wav(audio)
         self.assertEqual(wav[:4], b"RIFF")
 
+    def test_native_rate_controls_validation_wav_header_and_timeout(self):
+        sample_rate = 48_000
+        audio = np.full((int(sample_rate * 0.30), 1), 1000, dtype=np.int16)
+
+        validated, reason = vt.validate_audio([audio], sample_rate)
+
+        self.assertIsNone(reason)
+        with wave.open(io.BytesIO(vt.encode_wav(validated, sample_rate)), "rb") as wav:
+            self.assertEqual(wav.getframerate(), sample_rate)
+            self.assertEqual(wav.getnframes(), len(audio))
+            self.assertEqual(wav.getsampwidth(), 2)
+            self.assertEqual(wav.getnchannels(), 1)
+        self.assertEqual(vt.transcription_timeout_ms(sample_rate, sample_rate), 60_250)
+
+    def test_native_rate_short_recording_is_not_validated_as_16_khz(self):
+        native_rate_audio = np.full((4_800, 1), 1000, dtype=np.int16)
+
+        self.assertEqual(
+            vt.validate_audio([native_rate_audio], sample_rate=48_000)[1],
+            "too_short",
+        )
+
     def test_extracts_dedicated_audio_transcription_response(self):
         response = SimpleNamespace(
             candidates=[
@@ -126,6 +150,41 @@ class AudioValidationTests(unittest.TestCase):
         self.assertLessEqual(loud_peak, 1.0)
         self.assertEqual(len(quiet_envelope), 12)
         self.assertTrue(all(0.0 <= value <= 1.0 for value in loud_envelope))
+
+
+class SampleRateSelectionTests(unittest.TestCase):
+    def test_prefers_16_khz_when_input_settings_accept_it(self):
+        check = mock.Mock()
+        query = mock.Mock()
+
+        sample_rate = vt.select_input_sample_rate(check, query)
+
+        self.assertEqual(sample_rate, 16_000)
+        check.assert_called_once_with(
+            samplerate=16_000,
+            channels=1,
+            dtype="int16",
+        )
+        query.assert_not_called()
+
+    def test_uses_default_input_rate_when_16_khz_is_rejected(self):
+        check = mock.Mock(side_effect=RuntimeError("paInvalidSampleRate"))
+        query = mock.Mock(return_value={"default_samplerate": 48_000.0})
+
+        sample_rate = vt.select_input_sample_rate(check, query)
+
+        self.assertEqual(sample_rate, 48_000.0)
+        query.assert_called_once_with(kind="input")
+
+    def test_rejects_invalid_default_input_rate_metadata(self):
+        invalid_values = (None, "invalid", 0, -1, float("nan"), float("inf"))
+        for value in invalid_values:
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    vt.select_input_sample_rate(
+                        mock.Mock(side_effect=RuntimeError("unsupported")),
+                        mock.Mock(return_value={"default_samplerate": value}),
+                    )
 
 
 class AnimationPanelTests(unittest.TestCase):
@@ -309,7 +368,7 @@ class ConfigTests(unittest.TestCase):
         ) as print_message:
             self.assertEqual(vt.main(["--version"]), 0)
         acquire.assert_not_called()
-        print_message.assert_called_once_with("VoiceTyping 2.1.1")
+        print_message.assert_called_once_with("VoiceTyping 2.2.0")
 
     def test_save_is_private_atomic_and_preserves_other_settings(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -342,6 +401,32 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(vt.main(["--settings"]), 0)
             acquire.assert_not_called()
 
+    def test_non_gnome_wayland_starts_tray_before_requesting_portal_access(self):
+        previous_handler = vt.signal.getsignal(vt.signal.SIGUSR1)
+        environment = SimpleNamespace(is_wayland=True, is_gnome=False, is_x11=False)
+        app = vt.VoiceTypingApp(FakeClient(), FakePanel())
+        bootstrap = mock.Mock()
+
+        with mock.patch.object(vt, "acquire_pid_file", return_value=True), mock.patch.object(
+            vt, "release_pid_file"
+        ), mock.patch("desktop_integration.setup_global_shortcut", return_value="not_gnome"), mock.patch(
+            "desktop_environment.detect_desktop_environment", return_value=environment
+        ), mock.patch("setup_shortcut.get_shortcut", return_value="<Ctrl>F9"), mock.patch.object(
+            vt, "get_api_key", return_value="key"
+        ), mock.patch.object(vt, "load_config", return_value={"auto_paste": True, "live_transcription": False}), mock.patch.object(
+            vt, "create_client", return_value=FakeClient()
+        ), mock.patch.object(vt, "NotificationPanel", return_value=FakePanel()), mock.patch.object(
+            vt, "VoiceTypingApp", return_value=app
+        ), mock.patch("desktop_integration.build_paste_action") as build_paste, mock.patch.object(
+            vt, "_start_wayland_portal_bootstrap", bootstrap
+        ), mock.patch.object(vt, "run_tray") as run_tray:
+            self.assertEqual(vt.main([]), 0)
+
+        bootstrap.assert_called_once_with(app, environment, "CTRL+F9", auto_paste=True)
+        build_paste.assert_not_called()
+        run_tray.assert_called_once_with(app)
+        self.assertEqual(vt.signal.getsignal(vt.signal.SIGUSR1), previous_handler)
+
     def test_startup_toggle_is_buffered_and_cleanup_stays_signal_safe(self):
         previous_handler = vt.signal.getsignal(vt.signal.SIGUSR1)
         holder = {}
@@ -371,12 +456,15 @@ class ConfigTests(unittest.TestCase):
 
         with mock.patch.object(vt, "acquire_pid_file", return_value=True), mock.patch.object(
             vt, "release_pid_file", side_effect=release_pid
-        ), mock.patch("setup_shortcut.setup_gnome_shortcut", return_value="active"), mock.patch.object(
+        ), mock.patch("desktop_integration.setup_global_shortcut", return_value="active"), mock.patch.object(
             vt, "get_api_key", side_effect=key_during_startup
         ), mock.patch.object(vt, "create_client", return_value=object()), mock.patch.object(
             vt, "NotificationPanel", return_value=FakePanel()
         ), mock.patch.object(vt, "VoiceTypingApp", DummyApp), mock.patch.object(
             vt, "run_tray", side_effect=run_tray
+        ), mock.patch(
+            "desktop_environment.detect_desktop_environment",
+            return_value=SimpleNamespace(is_wayland=False, is_gnome=False, is_x11=False),
         ):
             self.assertEqual(vt.main([]), 0)
 
@@ -386,6 +474,18 @@ class ConfigTests(unittest.TestCase):
 
 
 class AppStateTests(unittest.TestCase):
+    def test_late_portal_resources_are_closed_after_shutdown(self):
+        app = vt.VoiceTypingApp(FakeClient(), FakePanel())
+        app.state = "shutting_down"
+        listener = mock.Mock()
+        paste_action = mock.Mock()
+
+        self.assertFalse(app.install_listener_if_running(listener))
+        self.assertFalse(app.install_paste_action_if_running(paste_action))
+
+        listener.stop.assert_called_once_with()
+        paste_action.close.assert_called_once_with()
+
     def test_microphone_callback_records_and_feeds_compact_signal_to_panel(self):
         panel = FakePanel()
         app = vt.VoiceTypingApp(FakeClient(), panel)
