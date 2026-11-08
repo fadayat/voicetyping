@@ -287,8 +287,39 @@ def create_live_transcriber(api_key: str):
     return LiveTranscriber(api_key, language_codes=language_codes)
 
 
-def transcription_timeout_ms(sample_count: int) -> int:
-    audio_seconds = sample_count / SAMPLE_RATE
+def _valid_sample_rate(value) -> float:
+    try:
+        sample_rate = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Input device has no usable sample rate") from error
+    if not math.isfinite(sample_rate) or sample_rate <= 0:
+        raise ValueError("Input device has no usable sample rate")
+    return sample_rate
+
+
+def select_input_sample_rate(check_input_settings=None, query_devices=None) -> float:
+    """Prefer Gemini Live's 16 kHz rate, then use the device's native rate."""
+    check_input_settings = check_input_settings or sd.check_input_settings
+    query_devices = query_devices or sd.query_devices
+    try:
+        check_input_settings(
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype="int16",
+        )
+    except Exception:
+        device = query_devices(kind="input")
+        default_sample_rate = (
+            device.get("default_samplerate")
+            if hasattr(device, "get")
+            else getattr(device, "default_samplerate", None)
+        )
+        return _valid_sample_rate(default_sample_rate)
+    return float(SAMPLE_RATE)
+
+
+def transcription_timeout_ms(sample_count: int, sample_rate: float = SAMPLE_RATE) -> int:
+    audio_seconds = sample_count / _valid_sample_rate(sample_rate)
     return min(180_000, REQUEST_TIMEOUT_MS + int(audio_seconds * 250))
 
 
@@ -604,14 +635,16 @@ class NotificationPanel:
                 self._thread.join(timeout=0.4)
 
 
-def validate_audio(chunks: list[np.ndarray]) -> tuple[np.ndarray | None, str | None]:
+def validate_audio(
+    chunks: list[np.ndarray], sample_rate: float = SAMPLE_RATE,
+) -> tuple[np.ndarray | None, str | None]:
     if not chunks:
         return None, "empty"
     try:
         audio_data = np.concatenate(chunks, axis=0)
     except (TypeError, ValueError):
         return None, "invalid"
-    if audio_data.size < int(SAMPLE_RATE * MIN_RECORDING_SECONDS):
+    if audio_data.size < int(_valid_sample_rate(sample_rate) * MIN_RECORDING_SECONDS):
         return None, "too_short"
     samples = audio_data.astype(np.int32, copy=False)
     if int(np.max(np.abs(samples), initial=0)) < SILENCE_PEAK_THRESHOLD:
@@ -619,9 +652,15 @@ def validate_audio(chunks: list[np.ndarray]) -> tuple[np.ndarray | None, str | N
     return audio_data, None
 
 
-def encode_wav(audio_data: np.ndarray) -> bytes:
+def encode_wav(audio_data: np.ndarray, sample_rate: float = SAMPLE_RATE) -> bytes:
     wav_io = io.BytesIO()
-    sf.write(wav_io, audio_data, SAMPLE_RATE, format="WAV", subtype="PCM_16")
+    sf.write(
+        wav_io,
+        audio_data,
+        int(round(_valid_sample_rate(sample_rate))),
+        format="WAV",
+        subtype="PCM_16",
+    )
     return wav_io.getvalue()
 
 
@@ -684,9 +723,22 @@ class _CaptureContext:
     control lock and the last in-flight chunk cannot be lost.
     """
 
-    def __init__(self, live_session, max_frames: int):
+    def __init__(
+        self,
+        live_session,
+        max_frames: int,
+        sample_rate: float = SAMPLE_RATE,
+        live_skip_reason: str | None = None,
+    ):
         self.live_session = live_session
         self.max_frames = max(1, max_frames)
+        self.sample_rate = _valid_sample_rate(sample_rate)
+        self.live_skip_reason = live_skip_reason
+        self.live_resampler = (
+            _StatefulLinearResampler(self.sample_rate, SAMPLE_RATE)
+            if live_session is not None and self.sample_rate != SAMPLE_RATE
+            else None
+        )
         self.chunks: list[np.ndarray] = []
         self.frames = 0
         self.sealed = False
@@ -705,9 +757,12 @@ class _CaptureContext:
         self.chunks.append(chunk)
         if self.live_session is not None and not self.live_failed:
             try:
-                if not self.live_session.feed_audio(
-                    chunk.astype("<i2", copy=False).tobytes()
-                ):
+                live_chunk = (
+                    self.live_resampler.process(chunk)
+                    if self.live_resampler is not None
+                    else chunk.astype("<i2", copy=False).tobytes()
+                )
+                if live_chunk and not self.live_session.feed_audio(live_chunk):
                     self.live_failed = True
             except Exception:
                 self.live_failed = True
@@ -716,6 +771,58 @@ class _CaptureContext:
     def seal_and_snapshot(self) -> list[np.ndarray]:
         self.sealed = True
         return list(self.chunks)
+
+
+class _StatefulLinearResampler:
+    """Resample mono int16 chunks while preserving the output sample grid."""
+
+    def __init__(self, input_rate: float, output_rate: float):
+        self.input_rate = float(input_rate)
+        self.output_rate = float(output_rate)
+        self.input_frames = 0
+        self.next_output_index = 0
+        self.previous_sample: np.int16 | None = None
+
+    def process(self, audio: np.ndarray) -> bytes:
+        samples = np.asarray(audio, dtype=np.int16).reshape(-1)
+        if samples.size == 0:
+            return b""
+
+        chunk_start = self.input_frames
+        chunk_end = chunk_start + samples.size
+        if self.previous_sample is None:
+            source = samples
+            source_start = chunk_start
+        else:
+            source = np.concatenate((np.asarray([self.previous_sample]), samples))
+            source_start = chunk_start - 1
+
+        last_available = chunk_end - 1
+        last_output_index = int(
+            math.floor(last_available * self.output_rate / self.input_rate)
+        )
+        if last_output_index < self.next_output_index:
+            self.input_frames = chunk_end
+            self.previous_sample = samples[-1]
+            return b""
+
+        output_indices = np.arange(
+            self.next_output_index, last_output_index + 1, dtype=np.float64
+        )
+        positions = output_indices * (self.input_rate / self.output_rate)
+        local_positions = positions - source_start
+        lower = np.floor(local_positions).astype(np.int64)
+        upper = np.minimum(lower + 1, source.size - 1)
+        fraction = local_positions - lower
+        interpolated = source[lower].astype(np.float64) + (
+            source[upper].astype(np.float64) - source[lower]
+        ) * fraction
+        output = np.clip(np.rint(interpolated), -32768, 32767).astype("<i2")
+
+        self.input_frames = chunk_end
+        self.previous_sample = samples[-1]
+        self.next_output_index = last_output_index + 1
+        return output.tobytes()
 
 
 class VoiceTypingApp:
@@ -728,6 +835,7 @@ class VoiceTypingApp:
         live_factory: Callable | None = None,
         paste_action: Callable | None = None,
         shortcut_label: str = "F8",
+        sample_rate_selector: Callable[[], float] | None = None,
     ):
         self.client = client
         self.panel = panel
@@ -746,6 +854,14 @@ class VoiceTypingApp:
         self._live_factory = live_factory
         self._paste_action = paste_action
         self.shortcut_label = shortcut_label
+        if sample_rate_selector is not None:
+            self._sample_rate_selector = sample_rate_selector
+        elif stream_factory is sd.InputStream:
+            self._sample_rate_selector = select_input_sample_rate
+        else:
+            # Injected streams used by tests and embedders historically receive
+            # 16 kHz audio and must not probe the host's real microphone.
+            self._sample_rate_selector = lambda: float(SAMPLE_RATE)
         self._live_session = None
         self._processing_live = None
         self._capture_context: _CaptureContext | None = None
@@ -804,7 +920,20 @@ class VoiceTypingApp:
                 return False
             self.state = "starting"
             self.recordings = []
-            use_live = self._live_factory is not None and time.monotonic() >= self._live_disabled_until
+        try:
+            sample_rate = _valid_sample_rate(self._sample_rate_selector())
+        except Exception as error:
+            with self._lock:
+                if not self._shutdown.is_set():
+                    self.state = "idle"
+            print(f"Could not select microphone sample rate ({type(error).__name__}).")
+            self.panel.show("Mikrofon əlçatan deyil", color="#f38ba8", bg_color="#302020", hide_after=3000)
+            return False
+        use_live = (
+            self._live_factory is not None
+            and time.monotonic() >= self._live_disabled_until
+        )
+        live_skip_reason = None
         live_session = None
         if use_live:
             try:
@@ -823,7 +952,9 @@ class VoiceTypingApp:
                 return False
             capture = _CaptureContext(
                 live_session,
-                max_frames=int(self.max_recording_seconds * SAMPLE_RATE),
+                max_frames=int(self.max_recording_seconds * sample_rate),
+                sample_rate=sample_rate,
+                live_skip_reason=live_skip_reason,
             )
             self._capture_context = capture
             self.recordings = capture.chunks
@@ -831,7 +962,7 @@ class VoiceTypingApp:
         new_stream = None
         try:
             new_stream = self.stream_factory(
-                samplerate=SAMPLE_RATE,
+                samplerate=sample_rate,
                 channels=CHANNELS,
                 dtype="int16",
                 callback=lambda indata, frames, time_info, status: self._capture_microphone(
@@ -926,9 +1057,13 @@ class VoiceTypingApp:
         except Exception:
             pass
 
-    def _batch_transcribe(self, audio_data: np.ndarray) -> str:
-        audio_part = types.Part.from_bytes(data=encode_wav(audio_data), mime_type="audio/wav")
-        timeout_ms = transcription_timeout_ms(len(audio_data))
+    def _batch_transcribe(
+        self, audio_data: np.ndarray, sample_rate: float = SAMPLE_RATE,
+    ) -> str:
+        audio_part = types.Part.from_bytes(
+            data=encode_wav(audio_data, sample_rate), mime_type="audio/wav"
+        )
+        timeout_ms = transcription_timeout_ms(len(audio_data), sample_rate)
         last_error = None
         for model_name in (TRANSCRIPTION_MODEL, *FALLBACK_MODELS):
             if self._shutdown.is_set():
@@ -985,11 +1120,14 @@ class VoiceTypingApp:
         stopped_at = stopped_at if stopped_at is not None else time.monotonic()
         route = "batch"
         fallback_reason = None
+        sample_rate = float(SAMPLE_RATE)
         try:
             self._close_stream(stream)
             live_failed = False
             if isinstance(chunks, _CaptureContext):
                 live_failed = chunks.live_failed
+                sample_rate = chunks.sample_rate
+                fallback_reason = chunks.live_skip_reason
                 chunks = chunks.seal_and_snapshot()
             if live_session is not None and live_failed:
                 fallback_reason = "feed_failed"
@@ -1002,7 +1140,7 @@ class VoiceTypingApp:
                     "Live audio streaming failed; using the full recording "
                     "with batch fallback."
                 )
-            audio_data, reason = validate_audio(chunks)
+            audio_data, reason = validate_audio(chunks, sample_rate)
             if self._shutdown.is_set():
                 return
             if reason:
@@ -1086,7 +1224,7 @@ class VoiceTypingApp:
             if self._shutdown.is_set():
                 return
             if not text:
-                text = self._batch_transcribe(audio_data)
+                text = self._batch_transcribe(audio_data, sample_rate)
             if self._shutdown.is_set():
                 return
             if not text:
@@ -1098,7 +1236,7 @@ class VoiceTypingApp:
             result_at = time.monotonic()
             self.last_timing = {
                 "route": route,
-                "audio_seconds": round(len(audio_data) / SAMPLE_RATE, 3),
+                "audio_seconds": round(len(audio_data) / sample_rate, 3),
                 "stop_to_result_ms": round((result_at - stopped_at) * 1000),
             }
             if fallback_reason is not None:

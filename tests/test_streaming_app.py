@@ -129,8 +129,10 @@ class StreamFactory:
         self.during_start = during_start
         self.during_stop = during_stop
         self.streams = []
+        self.calls = []
 
     def __call__(self, **kwargs):
+        self.calls.append(kwargs)
         stream = FakeStream(
             kwargs["callback"],
             fail_start=self.fail_start,
@@ -147,7 +149,9 @@ class StreamingAppTests(unittest.TestCase):
         self.copy = self.clipboard.start()
         self.addCleanup(self.clipboard.stop)
 
-    def make_app(self, live_factory=None, stream_factory=None):
+    def make_app(
+        self, live_factory=None, stream_factory=None, sample_rate_selector=None,
+    ):
         client = FakeClient()
         panel = FakePanel()
         streams = stream_factory or StreamFactory()
@@ -157,6 +161,7 @@ class StreamingAppTests(unittest.TestCase):
             stream_factory=streams,
             max_recording_seconds=120,
             live_factory=live_factory,
+            sample_rate_selector=sample_rate_selector,
         )
         self.addCleanup(lambda: app.shutdown() if app.state != "shutting_down" else None)
         return app, client, panel, streams
@@ -196,6 +201,89 @@ class StreamingAppTests(unittest.TestCase):
         self.assertNotIn("fallback_reason", app.last_timing)
         self.assertEqual(app.state, "idle")
 
+    def test_native_rate_capture_resamples_to_live_16khz(self):
+        live = FakeLiveSession("native live result")
+        live_factory = mock.Mock(return_value=live)
+        streams = StreamFactory()
+        app, client, _panel, _ = self.make_app(
+            live_factory,
+            streams,
+            sample_rate_selector=lambda: 48_000.0,
+        )
+
+        self.assertTrue(app.start_recording())
+        self.assertEqual(streams.calls[0]["samplerate"], 48_000.0)
+        self.assertEqual(app._capture_context.max_frames, 120 * 48_000)
+        chunk = np.full((int(48_000 * 0.30), 1), 1234, dtype=np.int16)
+        self.record(app, chunk)
+        self.finish_worker_after_stop(app)
+
+        live_factory.assert_called_once()
+        self.assertEqual(len(live.audio), 1)
+        live_samples = np.frombuffer(live.audio[0], dtype="<i2")
+        self.assertEqual(live_samples.size, int(16_000 * 0.30))
+        np.testing.assert_array_equal(live_samples, np.full(4_800, 1234, dtype=np.int16))
+        self.assertEqual(client.calls, [])
+        self.assertEqual(self.copy.call_args_list, [mock.call("native live result")])
+        self.assertEqual(app.last_timing.get("route"), "live")
+        self.assertNotIn("fallback_reason", app.last_timing)
+        self.assertEqual(app.last_timing.get("audio_seconds"), 0.3)
+
+    def test_native_rate_resampling_keeps_continuity_across_chunks(self):
+        samples = np.arange(8_820, dtype=np.int16).reshape(-1, 1)
+        whole = vt._StatefulLinearResampler(44_100, 16_000)
+        expected = whole.process(samples)
+
+        split = vt._StatefulLinearResampler(44_100, 16_000)
+        actual = b"".join(
+            (
+                split.process(samples[:1_111]),
+                split.process(samples[1_111:5_555]),
+                split.process(samples[5_555:]),
+            )
+        )
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(len(np.frombuffer(actual, dtype="<i2")), 3_200)
+
+    def test_native_rate_live_failure_batches_original_audio_and_sample_rate(self):
+        live = FakeLiveSession(result=None)
+        app, _client, _panel, _streams = self.make_app(
+            lambda: live,
+            sample_rate_selector=lambda: 48_000.0,
+        )
+        batch_calls = []
+        app._batch_transcribe = lambda audio_data, sample_rate: (
+            batch_calls.append((audio_data.copy(), sample_rate)) or "native batch"
+        )
+        first = np.full((4_801, 1), 900, dtype=np.int16)
+        second = np.full((9_599, 1), -700, dtype=np.int16)
+
+        self.assertTrue(app.start_recording())
+        self.record(app, first)
+        self.record(app, second)
+        self.finish_worker_after_stop(app)
+
+        self.assertEqual(len(batch_calls), 1)
+        np.testing.assert_array_equal(batch_calls[0][0], np.concatenate((first, second)))
+        self.assertEqual(batch_calls[0][1], 48_000.0)
+        self.assertEqual(self.copy.call_args_list, [mock.call("native batch")])
+        self.assertEqual(app.last_timing.get("route"), "batch")
+        self.assertEqual(app.last_timing.get("fallback_reason"), "live_empty_transcript")
+
+    def test_invalid_selected_rate_fails_before_opening_stream(self):
+        streams = StreamFactory()
+        app, _client, panel, _ = self.make_app(
+            stream_factory=streams,
+            sample_rate_selector=lambda: float("nan"),
+        )
+
+        self.assertFalse(app.start_recording())
+
+        self.assertEqual(streams.calls, [])
+        self.assertEqual(app.state, "idle")
+        self.assertIn("Mikrofon əlçatan deyil", panel.messages)
+
     def test_live_finalization_failure_batches_the_full_recording_and_sets_cooldown(self):
         live = FakeLiveSession(result=None)
         made = []
@@ -207,7 +295,7 @@ class StreamingAppTests(unittest.TestCase):
         app, client, _panel, _streams = self.make_app(make_live)
         chunk = self.record_after_start(app)
         batch_audio = []
-        app._batch_transcribe = lambda audio_data: batch_audio.append(audio_data.copy()) or "batch text"
+        app._batch_transcribe = lambda audio_data, _sample_rate: batch_audio.append(audio_data.copy()) or "batch text"
         self.finish_worker_after_stop(app)
 
         np.testing.assert_array_equal(batch_audio[0], chunk)
@@ -230,7 +318,7 @@ class StreamingAppTests(unittest.TestCase):
         sessions = [first]
         factory = mock.Mock(side_effect=lambda: sessions.pop(0))
         app, _client, _panel, _streams = self.make_app(factory)
-        app._batch_transcribe = lambda _audio_data: "fallback"
+        app._batch_transcribe = lambda _audio_data, _sample_rate: "fallback"
 
         self.record_after_start(app)
         self.finish_worker_after_stop(app)
@@ -301,7 +389,7 @@ class StreamingAppTests(unittest.TestCase):
                 live = FakeLiveSession("should not be used")
                 app, client, _panel, _streams = self.make_app(lambda: live)
                 batch_calls = []
-                app._batch_transcribe = lambda audio_data: batch_calls.append(audio_data) or "unexpected"
+                app._batch_transcribe = lambda audio_data, _sample_rate: batch_calls.append(audio_data) or "unexpected"
 
                 self.record_after_start(app, chunk)
                 self.finish_worker_after_stop(app)
@@ -383,7 +471,7 @@ class StreamingAppTests(unittest.TestCase):
         app, _client, _panel, _ = self.make_app(lambda: live, streams)
         batch_audio = []
         app._batch_transcribe = (
-            lambda audio_data: batch_audio.append(audio_data.copy()) or "full batch"
+            lambda audio_data, _sample_rate: batch_audio.append(audio_data.copy()) or "full batch"
         )
 
         self.assertTrue(app.start_recording())
@@ -405,7 +493,7 @@ class StreamingAppTests(unittest.TestCase):
         live = FakeLiveSession(feed_result=False)
         app, _client, _panel, _streams = self.make_app(lambda: live)
         cancel_counts_at_batch = []
-        app._batch_transcribe = lambda _audio_data: (
+        app._batch_transcribe = lambda _audio_data, _sample_rate: (
             cancel_counts_at_batch.append(live.cancel_calls) or "batch result"
         )
 

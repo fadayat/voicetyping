@@ -8,7 +8,7 @@ Press `F8`, speak, then press it again. VoiceTyping transcribes the recording
 with Gemini and pastes the final text into the field you kept focused.
 
 [Website](https://voicetyping1.vercel.app/) ·
-[VoiceTyping 2.1.1](https://github.com/fadayat/voicetyping/releases/tag/v2.1.1) ·
+[VoiceTyping 2.2.0](https://github.com/fadayat/voicetyping/releases/tag/v2.2.0) ·
 [Changelog](CHANGELOG.md) ·
 [MIT license](LICENSE)
 
@@ -41,16 +41,16 @@ You need Linux, Python 3.10 or newer, an internet connection, and your own
 **Ubuntu 24.04 on x86_64:**
 
 ```bash
-wget https://github.com/fadayat/voicetyping/releases/download/v2.1.1/voicetyping_2.1.1-1_ubuntu24.04_amd64.deb
-sudo apt install ./voicetyping_2.1.1-1_ubuntu24.04_amd64.deb
+wget https://github.com/fadayat/voicetyping/releases/download/v2.2.0/voicetyping_2.2.0-1_ubuntu24.04_amd64.deb
+sudo apt install ./voicetyping_2.2.0-1_ubuntu24.04_amd64.deb
 ```
 
 **Other modern x86_64 Linux distributions:**
 
 ```bash
-wget https://github.com/fadayat/voicetyping/releases/download/v2.1.1/VoiceTyping-2.1.1-x86_64.AppImage
+wget https://github.com/fadayat/voicetyping/releases/download/v2.2.0/VoiceTyping-2.2.0-x86_64.AppImage
 mkdir -p ~/.local/bin
-install -m 0755 VoiceTyping-2.1.1-x86_64.AppImage ~/.local/bin/VoiceTyping.AppImage
+install -m 0755 VoiceTyping-2.2.0-x86_64.AppImage ~/.local/bin/VoiceTyping.AppImage
 ~/.local/bin/VoiceTyping.AppImage
 ```
 

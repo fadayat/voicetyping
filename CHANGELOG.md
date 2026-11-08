@@ -4,6 +4,13 @@
 
 ### Improved
 
+- Repacked AppImages with a static type-2 runtime so they run without host
+  `libfuse.so.2`.
+- Made the AppImage shortcut send its toggle signal without starting Python,
+  removing the noticeable delay after pressing the recording shortcut.
+- Added native microphone sample-rate fallback when 16 kHz capture is
+  unavailable, resampling native input for Gemini Live while retaining the
+  original audio for batch fallback.
 - Added a locked Python dependency set shared by development and package builds.
 - Selected shortcut and paste behavior from the active desktop session.
 - Added X11 keyboard injection for paste and kept unsupported Wayland sessions

@@ -1,9 +1,11 @@
+import io
 import json
 import os
 import tempfile
 import threading
 import time
 import unittest
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -91,6 +93,28 @@ class AudioValidationTests(unittest.TestCase):
         wav = vt.encode_wav(audio)
         self.assertEqual(wav[:4], b"RIFF")
 
+    def test_native_rate_controls_validation_wav_header_and_timeout(self):
+        sample_rate = 48_000
+        audio = np.full((int(sample_rate * 0.30), 1), 1000, dtype=np.int16)
+
+        validated, reason = vt.validate_audio([audio], sample_rate)
+
+        self.assertIsNone(reason)
+        with wave.open(io.BytesIO(vt.encode_wav(validated, sample_rate)), "rb") as wav:
+            self.assertEqual(wav.getframerate(), sample_rate)
+            self.assertEqual(wav.getnframes(), len(audio))
+            self.assertEqual(wav.getsampwidth(), 2)
+            self.assertEqual(wav.getnchannels(), 1)
+        self.assertEqual(vt.transcription_timeout_ms(sample_rate, sample_rate), 60_250)
+
+    def test_native_rate_short_recording_is_not_validated_as_16_khz(self):
+        native_rate_audio = np.full((4_800, 1), 1000, dtype=np.int16)
+
+        self.assertEqual(
+            vt.validate_audio([native_rate_audio], sample_rate=48_000)[1],
+            "too_short",
+        )
+
     def test_extracts_dedicated_audio_transcription_response(self):
         response = SimpleNamespace(
             candidates=[
@@ -126,6 +150,41 @@ class AudioValidationTests(unittest.TestCase):
         self.assertLessEqual(loud_peak, 1.0)
         self.assertEqual(len(quiet_envelope), 12)
         self.assertTrue(all(0.0 <= value <= 1.0 for value in loud_envelope))
+
+
+class SampleRateSelectionTests(unittest.TestCase):
+    def test_prefers_16_khz_when_input_settings_accept_it(self):
+        check = mock.Mock()
+        query = mock.Mock()
+
+        sample_rate = vt.select_input_sample_rate(check, query)
+
+        self.assertEqual(sample_rate, 16_000)
+        check.assert_called_once_with(
+            samplerate=16_000,
+            channels=1,
+            dtype="int16",
+        )
+        query.assert_not_called()
+
+    def test_uses_default_input_rate_when_16_khz_is_rejected(self):
+        check = mock.Mock(side_effect=RuntimeError("paInvalidSampleRate"))
+        query = mock.Mock(return_value={"default_samplerate": 48_000.0})
+
+        sample_rate = vt.select_input_sample_rate(check, query)
+
+        self.assertEqual(sample_rate, 48_000.0)
+        query.assert_called_once_with(kind="input")
+
+    def test_rejects_invalid_default_input_rate_metadata(self):
+        invalid_values = (None, "invalid", 0, -1, float("nan"), float("inf"))
+        for value in invalid_values:
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    vt.select_input_sample_rate(
+                        mock.Mock(side_effect=RuntimeError("unsupported")),
+                        mock.Mock(return_value={"default_samplerate": value}),
+                    )
 
 
 class AnimationPanelTests(unittest.TestCase):
