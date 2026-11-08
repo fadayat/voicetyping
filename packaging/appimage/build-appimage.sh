@@ -85,6 +85,12 @@ PACKAGED_IMAGE="$PACKAGED_DIR/VoiceTyping-${VERSION}-x86_64.AppImage"
 
 OUTPUT_PATH="$OUTPUT_DIR/VoiceTyping-${VERSION}-x86_64.AppImage"
 install -m 0755 "$PACKAGED_IMAGE" "$OUTPUT_PATH"
+GENERATED_ZSYNC="$BUILD_DIR/$(basename "$PACKAGED_IMAGE").zsync"
+if [[ ! -f "$GENERATED_ZSYNC" ]]; then
+    echo "appimagetool did not create the zsync update file." >&2
+    exit 1
+fi
+install -m 0644 "$GENERATED_ZSYNC" "$OUTPUT_PATH.zsync"
 (
     cd "$OUTPUT_DIR"
     sha256sum "$(basename "$OUTPUT_PATH")" >"$(basename "$OUTPUT_PATH").sha256"
