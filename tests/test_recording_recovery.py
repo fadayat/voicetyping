@@ -9,8 +9,8 @@ from unittest import mock
 
 import numpy as np
 
-import voicetyping as vt
-from recording_recovery import RecoveryStore
+from voicetyping import app as vt
+from voicetyping.recording_recovery import RecoveryStore
 
 
 class FakePanel:
@@ -72,7 +72,7 @@ class RecoveryAppTests(unittest.TestCase):
             app = vt.VoiceTypingApp(FakeClient(), FakePanel(), recovery_store=store)
             app.state = "processing"
             app._batch_transcribe = mock.Mock(side_effect=RuntimeError("offline"))
-            with mock.patch("voicetyping.copy_to_clipboard"):
+            with mock.patch("voicetyping.app.copy_to_clipboard"):
                 app._stop_and_transcribe(None, [np.full((4800, 1), 1000, dtype=np.int16)])
             self.assertEqual(len(store.pending_files()), 1)
             self.assertEqual(os.stat(store.pending_files()[0]).st_mode & 0o777, 0o600)
@@ -91,7 +91,7 @@ class RecoveryAppTests(unittest.TestCase):
             # Recovery execution uses the app client and closes it after one pass.
             client = mock.Mock()
             app._recovery_client_factory = lambda: client
-            with mock.patch("voicetyping.sf.read", return_value=(np.ones(4000, dtype=np.int16), 16000)):
+            with mock.patch("voicetyping.app.sf.read", return_value=(np.ones(4000, dtype=np.int16), 16000)):
                 app._recovery_event.set()
                 app._recovery_thread = threading.Thread(target=app._recovery_loop, daemon=True)
                 app._recovery_thread.start()
@@ -100,7 +100,7 @@ class RecoveryAppTests(unittest.TestCase):
                     time.sleep(0.01)
             self.assertFalse(pending.exists())
             self.assertEqual(app.last_recovered_text, "Recovered words")
-            with mock.patch("voicetyping.copy_to_clipboard") as copy:
+            with mock.patch("voicetyping.app.copy_to_clipboard") as copy:
                 self.assertTrue(app.copy_last_recovered_transcription())
             copy.assert_called_once_with("Recovered words")
             app.shutdown()

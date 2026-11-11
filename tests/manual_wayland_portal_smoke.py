@@ -23,7 +23,7 @@ sys.path.insert(
     app_directory or str(Path(__file__).resolve().parents[1]),
 )
 
-from xdg_portal import GlobalShortcutPortal, RemoteDesktopKeyboard
+from voicetyping.xdg_portal import GlobalShortcutPortal, RemoteDesktopKeyboard
 
 
 TEST_TEXT = "VoiceTyping Wayland portal smoke test"

@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 
-from shortcuts import parse_shortcut
+from .shortcuts import parse_shortcut
 
 
 PORTAL_NAME = "org.freedesktop.portal.Desktop"

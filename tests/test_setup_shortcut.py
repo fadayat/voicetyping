@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from setup_shortcut import (
+from voicetyping.setup_shortcut import (
     SHORTCUT_NOT_GNOME,
     build_shortcut_command,
     find_binding_collision,
@@ -20,14 +20,14 @@ class ShortcutOwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "config.json"
             config.write_text(json.dumps({"shortcut": "Control+Alt+F8"}))
-            with patch("setup_shortcut.CONFIG_FILE", str(config)):
+            with patch("voicetyping.setup_shortcut.CONFIG_FILE", str(config)):
                 self.assertEqual(get_shortcut(), "<Ctrl><Alt>F8")
 
     def test_invalid_shortcut_config_falls_back_to_default(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "config.json"
             config.write_text(json.dumps({"shortcut": "Ctrl+"}))
-            with patch("setup_shortcut.CONFIG_FILE", str(config)):
+            with patch("voicetyping.setup_shortcut.CONFIG_FILE", str(config)):
                 self.assertEqual(get_shortcut(), "F8")
 
     @patch.dict(os.environ, {"APPIMAGE": "/home/user/Voice Typing.AppImage"}, clear=True)
@@ -46,12 +46,11 @@ class ShortcutOwnershipTests(unittest.TestCase):
         self.assertEqual(build_shortcut_command(), "/usr/bin/voicetyping --toggle")
 
     @patch.dict(os.environ, {}, clear=True)
-    @patch("setup_shortcut.sys.executable", "/usr/bin/python3")
-    @patch("setup_shortcut.os.path.abspath", return_value="/opt/voicetyping/setup_shortcut.py")
-    def test_source_shortcut_uses_python_and_helper(self, _abspath):
+    @patch("voicetyping.setup_shortcut.sys.executable", "/usr/bin/python3")
+    def test_source_shortcut_uses_python_and_helper(self):
         self.assertEqual(
             build_shortcut_command(),
-            "/usr/bin/python3 /opt/voicetyping/voicetyping_toggle.py",
+            "/usr/bin/python3 -m voicetyping.voicetyping_toggle",
         )
 
     def test_name_alone_does_not_claim_an_unrelated_binding(self):
@@ -63,6 +62,18 @@ class ShortcutOwnershipTests(unittest.TestCase):
     def test_existing_voice_typing_binding_is_found_by_command(self):
         path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom8/"
         entries = {path: ("My speech shortcut", "/opt/voicetyping.py --toggle", "F8")}
+
+        self.assertEqual(find_owned_binding([path], entries), path)
+
+    def test_package_toggle_binding_is_found_by_command(self):
+        path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom9/"
+        entries = {
+            path: (
+                "VoiceTyping",
+                "/usr/bin/python3 -m voicetyping.voicetyping_toggle",
+                "F8",
+            )
+        }
 
         self.assertEqual(find_owned_binding([path], entries), path)
 
@@ -92,7 +103,7 @@ class ShortcutOwnershipTests(unittest.TestCase):
         self.assertIsNone(find_binding_collision([path], entries, "F8", owned_path=path))
 
     @patch.dict(os.environ, {"XDG_CURRENT_DESKTOP": "XFCE"})
-    @patch("setup_shortcut._gsettings")
+    @patch("voicetyping.setup_shortcut._gsettings")
     def test_non_gnome_desktop_skips_shortcut_setup(self, gsettings):
         self.assertEqual(setup_gnome_shortcut(), SHORTCUT_NOT_GNOME)
         gsettings.assert_not_called()

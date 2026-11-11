@@ -4,10 +4,33 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import voicetyping_toggle as toggle
+from voicetyping import voicetyping_toggle as toggle
 
 
 class ToggleHelperTests(unittest.TestCase):
+    def test_process_validation_accepts_package_module_and_console_script(self):
+        launch_forms = (
+            b"/usr/bin/python3\0/home/user/voicetyping.py\0",
+            b"/home/user/.venv/bin/voicetyping\0",
+            b"/usr/bin/python3\0-m\0voicetyping.app\0",
+        )
+        for command_line in launch_forms:
+            with self.subTest(command_line=command_line), mock.patch.object(
+                toggle.Path, "read_bytes", return_value=command_line
+            ):
+                self.assertTrue(toggle.is_voicetyping_process(123))
+
+        with mock.patch.object(
+            toggle.Path, "read_bytes", return_value=b"/usr/bin/python3\0/tmp/unrelated.py\0"
+        ):
+            self.assertFalse(toggle.is_voicetyping_process(123))
+        with mock.patch.object(
+            toggle.Path,
+            "read_bytes",
+            return_value=b"/usr/bin/python3\0/tmp/unrelated.py\0/home/user/voicetyping.py\0",
+        ):
+            self.assertFalse(toggle.is_voicetyping_process(123))
+
     def test_invalid_pid_file_is_not_signalled(self):
         with tempfile.TemporaryDirectory() as directory:
             pid_file = Path(directory) / "voice.pid"

@@ -12,7 +12,7 @@ from unittest import mock
 
 import numpy as np
 
-import voicetyping as vt
+from voicetyping import app as vt
 
 
 class FakePanel:
@@ -368,7 +368,7 @@ class ConfigTests(unittest.TestCase):
         ) as print_message:
             self.assertEqual(vt.main(["--version"]), 0)
         acquire.assert_not_called()
-        print_message.assert_called_once_with("VoiceTyping 2.2.0")
+        print_message.assert_called_once_with("VoiceTyping 2.3.0")
 
     def test_save_is_private_atomic_and_preserves_other_settings(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -394,6 +394,29 @@ class ConfigTests(unittest.TestCase):
                 self.assertFalse(vt.send_toggle(pid_file))
         kill.assert_not_called()
 
+    def test_process_validation_accepts_supported_launch_forms(self):
+        launch_forms = (
+            b"/usr/bin/python3\0/home/user/voicetyping.py\0",
+            b"/home/user/.venv/bin/voicetyping\0",
+            b"/usr/bin/python3\0-m\0voicetyping.app\0",
+        )
+        for command_line in launch_forms:
+            with self.subTest(command_line=command_line), mock.patch.object(
+                vt.Path, "read_bytes", return_value=command_line
+            ):
+                self.assertTrue(vt.is_voicetyping_process(123))
+
+        with mock.patch.object(
+            vt.Path, "read_bytes", return_value=b"/usr/bin/python3\0/tmp/unrelated.py\0"
+        ):
+            self.assertFalse(vt.is_voicetyping_process(123))
+        with mock.patch.object(
+            vt.Path,
+            "read_bytes",
+            return_value=b"/usr/bin/python3\0/tmp/unrelated.py\0/home/user/voicetyping.py\0",
+        ):
+            self.assertFalse(vt.is_voicetyping_process(123))
+
     def test_settings_mode_never_claims_pid_file(self):
         with mock.patch.object(vt, "get_api_key", return_value="key"), mock.patch.object(
             vt, "acquire_pid_file"
@@ -409,15 +432,15 @@ class ConfigTests(unittest.TestCase):
 
         with mock.patch.object(vt, "acquire_pid_file", return_value=True), mock.patch.object(
             vt, "release_pid_file"
-        ), mock.patch("desktop_integration.setup_global_shortcut", return_value="not_gnome"), mock.patch(
-            "desktop_environment.detect_desktop_environment", return_value=environment
-        ), mock.patch("setup_shortcut.get_shortcut", return_value="<Ctrl>F9"), mock.patch.object(
+        ), mock.patch("voicetyping.desktop_integration.setup_global_shortcut", return_value="not_gnome"), mock.patch(
+            "voicetyping.desktop_environment.detect_desktop_environment", return_value=environment
+        ), mock.patch("voicetyping.setup_shortcut.get_shortcut", return_value="<Ctrl>F9"), mock.patch.object(
             vt, "get_api_key", return_value="key"
         ), mock.patch.object(vt, "load_config", return_value={"auto_paste": True, "live_transcription": False}), mock.patch.object(
             vt, "create_client", return_value=FakeClient()
         ), mock.patch.object(vt, "NotificationPanel", return_value=FakePanel()), mock.patch.object(
             vt, "VoiceTypingApp", return_value=app
-        ), mock.patch("desktop_integration.build_paste_action") as build_paste, mock.patch.object(
+        ), mock.patch("voicetyping.desktop_integration.build_paste_action") as build_paste, mock.patch.object(
             vt, "_start_wayland_portal_bootstrap", bootstrap
         ), mock.patch.object(vt, "run_tray") as run_tray:
             self.assertEqual(vt.main([]), 0)
@@ -456,14 +479,14 @@ class ConfigTests(unittest.TestCase):
 
         with mock.patch.object(vt, "acquire_pid_file", return_value=True), mock.patch.object(
             vt, "release_pid_file", side_effect=release_pid
-        ), mock.patch("desktop_integration.setup_global_shortcut", return_value="active"), mock.patch.object(
+        ), mock.patch("voicetyping.desktop_integration.setup_global_shortcut", return_value="active"), mock.patch.object(
             vt, "get_api_key", side_effect=key_during_startup
         ), mock.patch.object(vt, "create_client", return_value=object()), mock.patch.object(
             vt, "NotificationPanel", return_value=FakePanel()
         ), mock.patch.object(vt, "VoiceTypingApp", DummyApp), mock.patch.object(
             vt, "run_tray", side_effect=run_tray
         ), mock.patch(
-            "desktop_environment.detect_desktop_environment",
+            "voicetyping.desktop_environment.detect_desktop_environment",
             return_value=SimpleNamespace(is_wayland=False, is_gnome=False, is_x11=False),
         ):
             self.assertEqual(vt.main([]), 0)
@@ -477,10 +500,10 @@ class AppStateTests(unittest.TestCase):
     def setUp(self):
         recovery_tmp = tempfile.TemporaryDirectory()
         self.addCleanup(recovery_tmp.cleanup)
-        from recording_recovery import RecoveryStore
+        from voicetyping.recording_recovery import RecoveryStore
 
         recovery_factory = mock.patch(
-            "voicetyping.RecoveryStore",
+            "voicetyping.app.RecoveryStore",
             side_effect=lambda: RecoveryStore(Path(recovery_tmp.name) / "recovery"),
         )
         recovery_factory.start()

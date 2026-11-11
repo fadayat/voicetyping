@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 
-from shortcuts import parse_shortcut
+from .shortcuts import parse_shortcut
 
 CONFIG_FILE = os.path.expanduser("~/.config/voicetyping/config.json")
 MEDIA_KEYS = "org.gnome.settings-daemon.plugins.media-keys"
@@ -41,7 +41,14 @@ def find_owned_binding(current_list, entries):
         except ValueError:
             arguments = []
         script_names = {os.path.basename(argument) for argument in arguments}
-        targets_helper = "voicetyping_toggle.py" in script_names
+        targets_helper = (
+            "voicetyping_toggle.py" in script_names
+            or "voicetyping-toggle" in script_names
+            or (
+                "-m" in arguments
+                and "voicetyping.voicetyping_toggle" in arguments
+            )
+        )
         targets_legacy = "voicetyping.py" in script_names and "--toggle" in arguments
         dedicated_path = path.startswith(f"{CUSTOM_PREFIX}voicetyping")
         if dedicated_path or targets_helper or targets_legacy:
@@ -92,8 +99,7 @@ def build_shortcut_command():
     if launcher_path:
         return shlex.join([launcher_path, "--toggle"])
 
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voicetyping_toggle.py")
-    return shlex.join([sys.executable, script_path])
+    return shlex.join([sys.executable, "-m", "voicetyping.voicetyping_toggle"])
 
 
 def setup_gnome_shortcut():

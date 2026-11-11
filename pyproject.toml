@@ -1,6 +1,10 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "voicetyping"
-version = "2.2.0"
+dynamic = ["version"]
 description = "Linux desktop voice typing with Gemini transcription"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,5 +19,18 @@ dependencies = [
     "soundfile>=0.12.1",
 ]
 
+[project.scripts]
+voicetyping = "voicetyping.app:main"
+voicetyping-toggle = "voicetyping.voicetyping_toggle:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+version = {attr = "voicetyping.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.uv]
-package = false
+package = true

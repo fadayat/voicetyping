@@ -37,6 +37,8 @@ project_summary.md
 STREAMING_PLAN.md
 
 # Package builds
+build/
 dist/
+*.egg-info/
 AppDir/
 appimage-builder-cache/

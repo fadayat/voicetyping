@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from shortcuts import parse_shortcut, pynput_key_name, pynput_modifier
+from voicetyping.shortcuts import parse_shortcut, pynput_key_name, pynput_modifier
 
 
 class ShortcutParsingTests(unittest.TestCase):

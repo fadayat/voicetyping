@@ -3,7 +3,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from audio_routing import AudioRoutingError, SystemAudioRouter
+from voicetyping.audio_routing import AudioRoutingError, SystemAudioRouter
 
 
 def inspect_output(object_id, properties):

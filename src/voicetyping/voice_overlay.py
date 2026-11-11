@@ -17,7 +17,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
-from voice_visual import VoiceVisual
+from .voice_visual import VoiceVisual
 
 
 class VoiceOverlay:

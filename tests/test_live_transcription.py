@@ -4,7 +4,7 @@ import time
 import unittest
 from types import SimpleNamespace
 
-from live_transcription import LIVE_MODEL, LiveTranscriber
+from voicetyping.live_transcription import LIVE_MODEL, LiveTranscriber
 
 
 def server_message(

@@ -14,9 +14,9 @@ from unittest import mock
 
 import numpy as np
 
-from audio_routing import AudioRoutingError
-from recording_recovery import RecoveryStore
-import voicetyping as vt
+from voicetyping.audio_routing import AudioRoutingError
+from voicetyping.recording_recovery import RecoveryStore
+from voicetyping import app as vt
 
 
 def audio(seconds=0.30, amplitude=1000):
@@ -152,12 +152,12 @@ class StreamingAppTests(unittest.TestCase):
         recovery_tmp = tempfile.TemporaryDirectory()
         self.addCleanup(recovery_tmp.cleanup)
         recovery_factory = mock.patch(
-            "voicetyping.RecoveryStore",
+            "voicetyping.app.RecoveryStore",
             side_effect=lambda: RecoveryStore(Path(recovery_tmp.name) / "recovery"),
         )
         self.recovery_store_factory = recovery_factory.start()
         self.addCleanup(recovery_factory.stop)
-        self.clipboard = mock.patch("voicetyping.copy_to_clipboard")
+        self.clipboard = mock.patch("voicetyping.app.copy_to_clipboard")
         self.copy = self.clipboard.start()
         self.addCleanup(self.clipboard.stop)
 
