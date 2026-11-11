@@ -120,6 +120,19 @@ The floating indicator grows with your voice, flows while the transcript is
 finalized, and disappears when the text is ready. It stays click-through and
 does not take keyboard focus.
 
+Before each recording on PipeWire desktops, VoiceTyping prefers the microphone
+belonging to the active output device. This lets wired, USB, and Bluetooth
+headsets follow the desktop's current output choice. WirePlumber switches a
+Bluetooth headset to its microphone profile for the recording and restores its
+music profile afterward. VoiceTyping stops with a clear warning instead of
+silently using the laptop microphone when an active headset has no input.
+
+Show the current non-sensitive routing decision without opening the microphone:
+
+```bash
+uv run python voicetyping.py --audio-info
+```
+
 ## Compatibility
 
 | Environment | Behavior |

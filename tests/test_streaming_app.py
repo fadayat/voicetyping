@@ -12,6 +12,7 @@ from unittest import mock
 
 import numpy as np
 
+from audio_routing import AudioRoutingError
 import voicetyping as vt
 
 
@@ -151,6 +152,7 @@ class StreamingAppTests(unittest.TestCase):
 
     def make_app(
         self, live_factory=None, stream_factory=None, sample_rate_selector=None,
+        audio_router=None,
     ):
         client = FakeClient()
         panel = FakePanel()
@@ -162,6 +164,7 @@ class StreamingAppTests(unittest.TestCase):
             max_recording_seconds=120,
             live_factory=live_factory,
             sample_rate_selector=sample_rate_selector,
+            audio_router=audio_router,
         )
         self.addCleanup(lambda: app.shutdown() if app.state != "shutting_down" else None)
         return app, client, panel, streams
@@ -332,7 +335,17 @@ class StreamingAppTests(unittest.TestCase):
     def test_microphone_start_failure_cancels_live_session_and_leaves_no_timer(self):
         live = FakeLiveSession()
         streams = StreamFactory(fail_start=True)
-        app, _client, _panel, _ = self.make_app(lambda: live, streams)
+        route = mock.Mock()
+        route.selection = SimpleNamespace(
+            source_description="USB Headset Microphone",
+            reason="active-output-device",
+            device_api="alsa",
+        )
+        router = mock.Mock()
+        router.activate.return_value = route
+        app, _client, _panel, _ = self.make_app(
+            lambda: live, streams, audio_router=router
+        )
 
         self.assertFalse(app.start_recording())
 
@@ -341,7 +354,26 @@ class StreamingAppTests(unittest.TestCase):
         self.assertIsNone(app.duration_timer)
         self.assertIsNone(app._live_session)
         self.assertTrue(streams.streams[0].closed)
+        route.restore.assert_called_once_with()
         self.assertEqual(self.copy.call_count, 0)
+
+    def test_router_failure_cancels_live_session_before_opening_stream(self):
+        live = FakeLiveSession()
+        streams = StreamFactory()
+        router = mock.Mock()
+        router.activate.side_effect = AudioRoutingError("headset microphone missing")
+        app, _client, panel, _ = self.make_app(
+            lambda: live, streams, audio_router=router
+        )
+
+        self.assertFalse(app.start_recording())
+
+        self.assertEqual(streams.calls, [])
+        self.assertEqual(live.cancel_calls, 1)
+        self.assertEqual(app.state, "idle")
+        self.assertTrue(
+            any("Qulaqlıq mikrofonu əlçatan deyil" in message for message in panel.messages)
+        )
 
     def test_shutdown_during_capture_cancels_session_without_copying(self):
         live = FakeLiveSession()

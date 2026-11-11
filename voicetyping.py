@@ -25,6 +25,7 @@ import soundfile as sf
 from google import genai
 from google.genai import types
 
+from audio_routing import AudioRoutingError, SystemAudioRouter
 from live_transcription import LiveTranscriber
 
 
@@ -743,6 +744,7 @@ class _CaptureContext:
         self.frames = 0
         self.sealed = False
         self.live_failed = False
+        self.status_messages: set[str] = set()
 
     def capture(self, indata) -> np.ndarray | None:
         if self.sealed:
@@ -836,6 +838,7 @@ class VoiceTypingApp:
         paste_action: Callable | None = None,
         shortcut_label: str = "F8",
         sample_rate_selector: Callable[[], float] | None = None,
+        audio_router=None,
     ):
         self.client = client
         self.panel = panel
@@ -862,6 +865,12 @@ class VoiceTypingApp:
             # Injected streams used by tests and embedders historically receive
             # 16 kHz audio and must not probe the host's real microphone.
             self._sample_rate_selector = lambda: float(SAMPLE_RATE)
+        if audio_router is not None:
+            self._audio_router = audio_router
+        elif stream_factory is sd.InputStream:
+            self._audio_router = SystemAudioRouter()
+        else:
+            self._audio_router = None
         self._live_session = None
         self._processing_live = None
         self._capture_context: _CaptureContext | None = None
@@ -872,7 +881,7 @@ class VoiceTypingApp:
         """Compatibility entry point used by tests and direct callers."""
         context = self._capture_context
         if context is not None:
-            self._capture_microphone(context, indata)
+            self._capture_microphone(context, indata, status)
             return
         # Older direct callers may set state/recordings without constructing a
         # stream.  This path also avoids the app control lock and therefore
@@ -891,7 +900,11 @@ class VoiceTypingApp:
             if callable(signal_sink):
                 signal_sink(*normalize_audio_signal(indata))
 
-    def _capture_microphone(self, context: _CaptureContext, indata) -> None:
+    def _capture_microphone(self, context: _CaptureContext, indata, status=None) -> None:
+        if status:
+            status_text = str(status).strip() or type(status).__name__
+            if len(context.status_messages) < 8:
+                context.status_messages.add(status_text)
         chunk = context.capture(indata)
         if chunk is None:
             return
@@ -920,15 +933,6 @@ class VoiceTypingApp:
                 return False
             self.state = "starting"
             self.recordings = []
-        try:
-            sample_rate = _valid_sample_rate(self._sample_rate_selector())
-        except Exception as error:
-            with self._lock:
-                if not self._shutdown.is_set():
-                    self.state = "idle"
-            print(f"Could not select microphone sample rate ({type(error).__name__}).")
-            self.panel.show("Mikrofon əlçatan deyil", color="#f38ba8", bg_color="#302020", hide_after=3000)
-            return False
         use_live = (
             self._live_factory is not None
             and time.monotonic() >= self._live_disabled_until
@@ -945,8 +949,37 @@ class VoiceTypingApp:
                 live_session = None
                 self._live_disabled_until = time.monotonic() + LIVE_FAILURE_COOLDOWN_SECONDS
                 print(f"Live transcription setup failed ({type(error).__name__}); using batch.")
+
+        active_route = None
+        try:
+            if self._audio_router is not None:
+                active_route = self._audio_router.activate()
+                selection = active_route.selection
+                print(
+                    f"Microphone selected: {selection.source_description}; "
+                    f"policy={selection.reason}; api={selection.device_api or 'system'}"
+                )
+            sample_rate = _valid_sample_rate(self._sample_rate_selector())
+        except Exception as error:
+            if active_route is not None:
+                active_route.restore()
+            if live_session is not None:
+                live_session.cancel()
+            with self._lock:
+                if not self._shutdown.is_set():
+                    self.state = "idle"
+            if isinstance(error, AudioRoutingError):
+                print(f"Could not route headset microphone ({type(error).__name__}).")
+                message = "Qulaqlıq mikrofonu əlçatan deyil"
+            else:
+                print(f"Could not select microphone sample rate ({type(error).__name__}).")
+                message = "Mikrofon əlçatan deyil"
+            self.panel.show(message, color="#f38ba8", bg_color="#302020", hide_after=3000)
+            return False
         with self._lock:
             if self._shutdown.is_set():
+                if active_route is not None:
+                    active_route.restore()
                 if live_session is not None:
                     live_session.cancel()
                 return False
@@ -966,7 +999,7 @@ class VoiceTypingApp:
                 channels=CHANNELS,
                 dtype="int16",
                 callback=lambda indata, frames, time_info, status: self._capture_microphone(
-                    capture, indata
+                    capture, indata, status
                 ),
             )
             new_stream.start()
@@ -984,6 +1017,9 @@ class VoiceTypingApp:
             print(f"Could not open microphone ({type(error).__name__}).")
             self.panel.show("Mikrofon əlçatan deyil", color="#f38ba8", bg_color="#302020", hide_after=3000)
             return False
+        finally:
+            if active_route is not None:
+                active_route.restore()
 
         with self._lock:
             if self._shutdown.is_set():
@@ -1125,6 +1161,12 @@ class VoiceTypingApp:
             self._close_stream(stream)
             live_failed = False
             if isinstance(chunks, _CaptureContext):
+                if chunks.status_messages:
+                    print(
+                        "Microphone stream status: "
+                        + "; ".join(sorted(chunks.status_messages))
+                        + "."
+                    )
                 live_failed = chunks.live_failed
                 sample_rate = chunks.sample_rate
                 fallback_reason = chunks.live_skip_reason
@@ -1532,6 +1574,15 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv == ["--version"]:
         print(f"{APP_NAME} {APP_VERSION}")
+        return 0
+    if argv == ["--audio-info"]:
+        try:
+            for line in SystemAudioRouter().audio_info():
+                print(line)
+            print(f"Capture sample rate: {select_input_sample_rate():g} Hz")
+        except Exception as error:
+            print(f"Audio diagnostics failed ({type(error).__name__}).")
+            return 1
         return 0
     if argv and argv[0] == "--toggle":
         return 0 if send_toggle() else 1

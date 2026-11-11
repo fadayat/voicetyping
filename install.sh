@@ -66,6 +66,7 @@ if [[ ! -L "$INSTALL_ROOT/current" && -f "$INSTALL_ROOT/voicetyping.py" && ! -L 
         legacy_files=()
         for source_file in \
             voicetyping.py \
+            audio_routing.py \
             live_transcription.py \
             auto_paste.py \
             voice_overlay.py \
@@ -142,6 +143,7 @@ PY
 echo "📂 Staging VoiceTyping modules..."
 for source_file in \
     voicetyping.py \
+    audio_routing.py \
     live_transcription.py \
     auto_paste.py \
     voice_overlay.py \
