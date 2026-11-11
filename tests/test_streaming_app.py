@@ -5,14 +5,17 @@ real microphone, make a network request, or need API credentials.
 """
 
 import threading
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
 
 from audio_routing import AudioRoutingError
+from recording_recovery import RecoveryStore
 import voicetyping as vt
 
 
@@ -146,6 +149,14 @@ class StreamFactory:
 
 class StreamingAppTests(unittest.TestCase):
     def setUp(self):
+        recovery_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(recovery_tmp.cleanup)
+        recovery_factory = mock.patch(
+            "voicetyping.RecoveryStore",
+            side_effect=lambda: RecoveryStore(Path(recovery_tmp.name) / "recovery"),
+        )
+        self.recovery_store_factory = recovery_factory.start()
+        self.addCleanup(recovery_factory.stop)
         self.clipboard = mock.patch("voicetyping.copy_to_clipboard")
         self.copy = self.clipboard.start()
         self.addCleanup(self.clipboard.stop)
@@ -353,6 +364,7 @@ class StreamingAppTests(unittest.TestCase):
         self.assertEqual(app.state, "idle")
         self.assertIsNone(app.duration_timer)
         self.assertIsNone(app._live_session)
+        self.assertFalse(app._recovery_pause.is_set())
         self.assertTrue(streams.streams[0].closed)
         route.restore.assert_called_once_with()
         self.assertEqual(self.copy.call_count, 0)
@@ -374,6 +386,59 @@ class StreamingAppTests(unittest.TestCase):
         self.assertTrue(
             any("Qulaqlıq mikrofonu əlçatan deyil" in message for message in panel.messages)
         )
+
+    def test_route_stays_active_until_recording_stops_and_combines_with_spool(self):
+        route = mock.Mock()
+        route.selection = SimpleNamespace(
+            source_description="USB Headset Microphone",
+            reason="active-output-device",
+            device_api="alsa",
+        )
+        router = mock.Mock()
+        router.activate.return_value = route
+        app, _client, _panel, _streams = self.make_app(audio_router=router)
+
+        self.assertTrue(app.start_recording())
+        route.restore.assert_not_called()
+        self.record(app)
+        self.assertTrue(app.request_stop())
+        self.finish_worker(app)
+
+        route.restore.assert_called_once_with()
+        self.assertEqual(app.state, "idle")
+
+    def test_shutdown_restores_active_route(self):
+        route = mock.Mock()
+        route.selection = SimpleNamespace(
+            source_description="Bluetooth Headset Microphone",
+            reason="active-output-device",
+            device_api="bluez5",
+        )
+        router = mock.Mock()
+        router.activate.return_value = route
+        app, _client, _panel, streams = self.make_app(audio_router=router)
+
+        self.assertTrue(app.start_recording())
+        route.restore.assert_not_called()
+        app.shutdown()
+
+        self.assertTrue(streams.streams[0].closed)
+        route.restore.assert_called_once_with()
+        self.assertEqual(app.state, "shutting_down")
+
+    def test_recording_pauses_background_retry_and_resumes_after_stop(self):
+        app, _client, _panel, _streams = self.make_app()
+        retry_client = mock.Mock()
+        app._recovery_client = retry_client
+
+        self.assertTrue(app.start_recording())
+        self.assertTrue(app._recovery_pause.is_set())
+        retry_client.close.assert_called_once_with()
+        self.record(app)
+        self.assertTrue(app.request_stop())
+        self.finish_worker(app)
+
+        self.assertFalse(app._recovery_pause.is_set())
 
     def test_shutdown_during_capture_cancels_session_without_copying(self):
         live = FakeLiveSession()

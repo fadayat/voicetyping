@@ -474,6 +474,18 @@ class ConfigTests(unittest.TestCase):
 
 
 class AppStateTests(unittest.TestCase):
+    def setUp(self):
+        recovery_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(recovery_tmp.cleanup)
+        from recording_recovery import RecoveryStore
+
+        recovery_factory = mock.patch(
+            "voicetyping.RecoveryStore",
+            side_effect=lambda: RecoveryStore(Path(recovery_tmp.name) / "recovery"),
+        )
+        recovery_factory.start()
+        self.addCleanup(recovery_factory.stop)
+
     def test_late_portal_resources_are_closed_after_shutdown(self):
         app = vt.VoiceTypingApp(FakeClient(), FakePanel())
         app.state = "shutting_down"

@@ -27,6 +27,7 @@ from google.genai import types
 
 from audio_routing import AudioRoutingError, SystemAudioRouter
 from live_transcription import LiveTranscriber
+from recording_recovery import RecordingSpool, RecoveryStore
 
 
 def _bundled_appimage_library(filename: str) -> str | None:
@@ -730,11 +731,13 @@ class _CaptureContext:
         max_frames: int,
         sample_rate: float = SAMPLE_RATE,
         live_skip_reason: str | None = None,
+        spool: RecordingSpool | None = None,
     ):
         self.live_session = live_session
         self.max_frames = max(1, max_frames)
         self.sample_rate = _valid_sample_rate(sample_rate)
         self.live_skip_reason = live_skip_reason
+        self.spool = spool
         self.live_resampler = (
             _StatefulLinearResampler(self.sample_rate, SAMPLE_RATE)
             if live_session is not None and self.sample_rate != SAMPLE_RATE
@@ -757,6 +760,8 @@ class _CaptureContext:
             return None
         self.frames += len(chunk)
         self.chunks.append(chunk)
+        if self.spool is not None:
+            self.spool.offer(chunk.astype("<i2", copy=False).tobytes())
         if self.live_session is not None and not self.live_failed:
             try:
                 live_chunk = (
@@ -839,6 +844,7 @@ class VoiceTypingApp:
         shortcut_label: str = "F8",
         sample_rate_selector: Callable[[], float] | None = None,
         audio_router=None,
+        recovery_store: RecoveryStore | None = None,
     ):
         self.client = client
         self.panel = panel
@@ -850,6 +856,7 @@ class VoiceTypingApp:
         self.worker: threading.Thread | None = None
         self.duration_timer: threading.Timer | None = None
         self.last_text: str | None = None
+        self.last_recovered_text: str | None = None
         self.listener = None
         self._last_toggle = 0.0
         self._lock = threading.RLock()
@@ -876,6 +883,14 @@ class VoiceTypingApp:
         self._capture_context: _CaptureContext | None = None
         self._live_disabled_until = 0.0
         self.last_timing: dict = {}
+        self.recovery_store = recovery_store or RecoveryStore()
+        self._active_route = None
+        self._recovery_event = threading.Event()
+        self._recovery_pause = threading.Event()
+        self._recovery_thread: threading.Thread | None = None
+        self._recovery_client_factory: Callable | None = None
+        self._recovery_client = None
+        self._spools_recovered = False
 
     def microphone_callback(self, indata, frames, time_info, status) -> None:
         """Compatibility entry point used by tests and direct callers."""
@@ -933,6 +948,11 @@ class VoiceTypingApp:
                 return False
             self.state = "starting"
             self.recordings = []
+            recovery_client = self._recovery_client
+        self._recovery_pause.set()
+        if recovery_client is not None:
+            threading.Thread(target=self._close_recovery_client, args=(recovery_client,),
+                             daemon=True, name="recovery-cancel").start()
         use_live = (
             self._live_factory is not None
             and time.monotonic() >= self._live_disabled_until
@@ -951,6 +971,7 @@ class VoiceTypingApp:
                 print(f"Live transcription setup failed ({type(error).__name__}); using batch.")
 
         active_route = None
+        spool = None
         try:
             if self._audio_router is not None:
                 active_route = self._audio_router.activate()
@@ -968,6 +989,9 @@ class VoiceTypingApp:
             with self._lock:
                 if not self._shutdown.is_set():
                     self.state = "idle"
+            if spool is not None:
+                spool.discard()
+            self._resume_recovery()
             if isinstance(error, AudioRoutingError):
                 print(f"Could not route headset microphone ({type(error).__name__}).")
                 message = "Qulaqlıq mikrofonu əlçatan deyil"
@@ -976,18 +1000,27 @@ class VoiceTypingApp:
                 message = "Mikrofon əlçatan deyil"
             self.panel.show(message, color="#f38ba8", bg_color="#302020", hide_after=3000)
             return False
+        try:
+            spool = self.recovery_store.start_spool(sample_rate)
+        except Exception as error:
+            spool = None
+            print(f"Recording spool unavailable ({type(error).__name__}).")
         with self._lock:
             if self._shutdown.is_set():
                 if active_route is not None:
                     active_route.restore()
                 if live_session is not None:
                     live_session.cancel()
+                if spool is not None:
+                    spool.discard()
+                self._resume_recovery()
                 return False
             capture = _CaptureContext(
                 live_session,
                 max_frames=int(self.max_recording_seconds * sample_rate),
                 sample_rate=sample_rate,
                 live_skip_reason=live_skip_reason,
+                spool=spool,
             )
             self._capture_context = capture
             self.recordings = capture.chunks
@@ -1014,19 +1047,21 @@ class VoiceTypingApp:
                 self._live_session = None
                 if not self._shutdown.is_set():
                     self.state = "idle"
+            if active_route is not None:
+                active_route.restore()
+            if spool is not None:
+                spool.discard()
+            self._resume_recovery()
             print(f"Could not open microphone ({type(error).__name__}).")
             self.panel.show("Mikrofon əlçatan deyil", color="#f38ba8", bg_color="#302020", hide_after=3000)
             return False
-        finally:
-            if active_route is not None:
-                active_route.restore()
-
         with self._lock:
             if self._shutdown.is_set():
                 self.state = "shutting_down"
                 close_immediately = True
             else:
                 self.stream = new_stream
+                self._active_route = active_route
                 self.state = "recording"
                 close_immediately = False
                 self.duration_timer = threading.Timer(self.max_recording_seconds, self._duration_limit_reached)
@@ -1034,6 +1069,13 @@ class VoiceTypingApp:
                 self.duration_timer.start()
         if close_immediately:
             self._close_stream(new_stream)
+            if active_route is not None:
+                active_route.restore()
+            if spool is not None:
+                try:
+                    spool.preserve(self.recovery_store, sample_rate)
+                except Exception:
+                    pass
             if live_session is not None:
                 live_session.cancel()
             return False
@@ -1065,6 +1107,8 @@ class VoiceTypingApp:
             live_session = (
                 capture.live_session if capture is not None else self._live_session
             )
+            active_route = self._active_route
+            self._active_route = None
             self._live_session = None
             self._processing_live = live_session
             stopped_at = time.monotonic()
@@ -1072,7 +1116,7 @@ class VoiceTypingApp:
                 timer.cancel()
             self.worker = threading.Thread(
                 target=self._stop_and_transcribe,
-                args=(stream, chunks, live_session, stopped_at),
+                args=(stream, chunks, live_session, stopped_at, active_route),
                 daemon=True,
                 name="transcription-worker",
             )
@@ -1094,19 +1138,21 @@ class VoiceTypingApp:
             pass
 
     def _batch_transcribe(
-        self, audio_data: np.ndarray, sample_rate: float = SAMPLE_RATE,
+        self, audio_data: np.ndarray, sample_rate: float = SAMPLE_RATE, client=None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> str:
+        client = client or self.client
         audio_part = types.Part.from_bytes(
             data=encode_wav(audio_data, sample_rate), mime_type="audio/wav"
         )
         timeout_ms = transcription_timeout_ms(len(audio_data), sample_rate)
         last_error = None
         for model_name in (TRANSCRIPTION_MODEL, *FALLBACK_MODELS):
-            if self._shutdown.is_set():
+            if self._shutdown.is_set() or (should_stop is not None and should_stop()):
                 return ""
             try:
                 if model_name == TRANSCRIPTION_MODEL:
-                    response = self.client.models.generate_content(
+                    response = client.models.generate_content(
                         model=model_name,
                         contents=[audio_part],
                         config=types.GenerateContentConfig(
@@ -1121,7 +1167,7 @@ class VoiceTypingApp:
                         "conversational replies, explanations, formatting, or quotation marks. "
                         "If no speech is heard, return nothing."
                     )
-                    response = self.client.models.generate_content(
+                    response = client.models.generate_content(
                         model=model_name,
                         contents=[prompt, audio_part],
                         config=types.GenerateContentConfig(
@@ -1152,13 +1198,21 @@ class VoiceTypingApp:
         chunks: list[np.ndarray] | _CaptureContext,
         live_session=None,
         stopped_at: float | None = None,
+        active_route=None,
     ) -> None:
         stopped_at = stopped_at if stopped_at is not None else time.monotonic()
         route = "batch"
         fallback_reason = None
         sample_rate = float(SAMPLE_RATE)
+        recovery_path = None
+        spool = chunks.spool if isinstance(chunks, _CaptureContext) else None
+        audio_data = None
+        route_restored = False
         try:
             self._close_stream(stream)
+            if active_route is not None:
+                active_route.restore()
+                route_restored = True
             live_failed = False
             if isinstance(chunks, _CaptureContext):
                 if chunks.status_messages:
@@ -1171,6 +1225,8 @@ class VoiceTypingApp:
                 sample_rate = chunks.sample_rate
                 fallback_reason = chunks.live_skip_reason
                 chunks = chunks.seal_and_snapshot()
+            if spool is not None:
+                spool.finish()
             if live_session is not None and live_failed:
                 fallback_reason = "feed_failed"
                 live_session.cancel()
@@ -1186,6 +1242,8 @@ class VoiceTypingApp:
             if self._shutdown.is_set():
                 return
             if reason:
+                if spool is not None:
+                    spool.discard()
                 messages = {
                     "empty": "Səs yazılmadı — yenidən danışın",
                     "too_short": "Səs yazısı çox qısadır — yenidən danışın",
@@ -1196,6 +1254,7 @@ class VoiceTypingApp:
                 return
 
             assert audio_data is not None
+            wav_bytes = encode_wav(audio_data, sample_rate)
             text = ""
             # Snapshot the destination while transcription runs. Clipboard
             # helpers can briefly change focus, so this must finish before copy.
@@ -1270,8 +1329,13 @@ class VoiceTypingApp:
             if self._shutdown.is_set():
                 return
             if not text:
+                recovery_path = self._preserve_failed_recording(wav_bytes, spool, sample_rate)
                 self.panel.show("Danışıq başa düşülmədi — yenidən sınayın", color="#fab387", bg_color="#2d2520", hide_after=3000)
+                if recovery_path is not None:
+                    self.retry_saved_recordings()
                 return
+            if spool is not None:
+                spool.discard()
             if preparation_thread is None and callable(prepare_paste):
                 start_preparation()
             self.last_text = text
@@ -1340,6 +1404,8 @@ class VoiceTypingApp:
                 else "Hazırdır — Ctrl+V ilə yapışdırın"
             )
             self.panel.show(completion_message, color="#a6e3a1", bg_color="#1e2e1e", hide_after=3000)
+            if spool is not None:
+                spool.discard()
             print(
                 f"Transcription copied to clipboard. route={route}; "
                 f"audio_seconds={self.last_timing['audio_seconds']}; "
@@ -1351,8 +1417,21 @@ class VoiceTypingApp:
             )
         except Exception as error:
             print(f"Transcription failed ({type(error).__name__}, status={getattr(error, 'code', 'unknown')}).")
-            self.panel.show(friendly_api_error(error), color="#f38ba8", bg_color="#302020", hide_after=5000)
+            if audio_data is not None:
+                try:
+                    recovery_path = self._preserve_failed_recording(
+                        encode_wav(audio_data, sample_rate), spool, sample_rate
+                    )
+                except Exception as save_error:
+                    print(f"Recording recovery save failed ({type(save_error).__name__}).")
+            if recovery_path is not None:
+                self.panel.show("Transkripsiya alınmadı — səs saxlanıldı və yenidən sınanacaq", color="#f38ba8", bg_color="#302020", hide_after=5000)
+                self.retry_saved_recordings()
+            else:
+                self.panel.show(friendly_api_error(error), color="#f38ba8", bg_color="#302020", hide_after=5000)
         finally:
+            if active_route is not None and not route_restored:
+                active_route.restore()
             if live_session is not None:
                 live_session.cancel()
             with self._lock:
@@ -1361,6 +1440,7 @@ class VoiceTypingApp:
                 shutting_down = self.state == "shutting_down"
                 if not shutting_down:
                     self.state = "idle"
+            self._resume_recovery()
             if shutting_down:
                 try:
                     self.client.close()
@@ -1379,6 +1459,126 @@ class VoiceTypingApp:
         self.panel.show("Hazırdır — Ctrl+V ilə yapışdırın", color="#a6e3a1", bg_color="#1e2e1e", hide_after=2000)
         return True
 
+    def _preserve_failed_recording(self, wav_bytes, spool, sample_rate):
+        try:
+            path = self.recovery_store.save_audio(wav_bytes)
+            if spool is not None:
+                spool.discard()
+            return path
+        except Exception as error:
+            print(f"Recording recovery save failed ({type(error).__name__}).")
+            if spool is not None:
+                try:
+                    return spool.preserve(self.recovery_store, sample_rate)
+                except Exception as spool_error:
+                    print(f"Recording spool preservation failed ({type(spool_error).__name__}).")
+            return None
+
+    def start_recovery_worker(self, client_factory: Callable) -> None:
+        with self._lock:
+            self._recovery_client_factory = client_factory
+            if self._recovery_thread is not None and self._recovery_thread.is_alive():
+                return
+            self._recovery_thread = threading.Thread(
+                target=self._recovery_loop, daemon=True, name="recording-recovery"
+            )
+            thread = self._recovery_thread
+        thread.start()
+        self._recovery_event.set()
+
+    def retry_saved_recordings(self, notify: bool = False) -> None:
+        self._recovery_event.set()
+        if notify:
+            self.panel.show("Saxlanmış səslər yenidən yoxlanılır", color="#89b4fa", bg_color="#202838", hide_after=2500)
+
+    def _resume_recovery(self) -> None:
+        self._recovery_pause.clear()
+        self._recovery_event.set()
+
+    def _recovery_loop(self) -> None:
+        while not self._shutdown.is_set():
+            self._recovery_event.wait()
+            self._recovery_event.clear()
+            if self._shutdown.is_set():
+                return
+            if not self._spools_recovered:
+                self.recovery_store.recover_incomplete_spools()
+                self._spools_recovered = True
+            if self._recovery_pause.is_set():
+                continue
+            with self._lock:
+                if self.state != "idle":
+                    continue
+                factory = self._recovery_client_factory
+            if factory is None:
+                continue
+            files = self.recovery_store.pending_files()
+            if not files:
+                continue
+            client = None
+            try:
+                client = factory()
+                with self._lock:
+                    self._recovery_client = client
+                for pending in files:
+                    if self._shutdown.is_set() or self._recovery_pause.is_set():
+                        break
+                    audio_data, sample_rate = sf.read(
+                        str(pending), dtype="int16", always_2d=True
+                    )
+                    if audio_data.ndim == 2 and audio_data.shape[1] == 1:
+                        audio_data = audio_data[:, 0]
+                    text = self._batch_transcribe(
+                        audio_data,
+                        sample_rate,
+                        client,
+                        should_stop=lambda: self._recovery_pause.is_set(),
+                    ).strip()
+                    if text and not self._recovery_pause.is_set() and not self._shutdown.is_set():
+                        self.recovery_store.discard(pending)
+                        self.last_recovered_text = text
+                        self.panel.show("Saxlanmış mətn bərpa edildi", color="#a6e3a1", bg_color="#1e2e1e", hide_after=5000)
+            except Exception as error:
+                print(f"Saved recording retry failed ({type(error).__name__}).")
+            finally:
+                with self._lock:
+                    if self._recovery_client is client:
+                        self._recovery_client = None
+                if client is not None:
+                    self._close_recovery_client(client)
+            if self.recovery_store.pending_files() and not self._shutdown.is_set():
+                self._shutdown.wait(5.0)
+                if not self._recovery_pause.is_set() and not self._shutdown.is_set():
+                    self._recovery_event.set()
+
+    @staticmethod
+    def _close_recovery_client(client) -> None:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    def copy_last_recovered_transcription(self) -> bool:
+        if not self.last_recovered_text:
+            self.panel.show("Yeni bərpa edilmiş mətn yoxdur", color="#fab387", bg_color="#2d2520", hide_after=2500)
+            return False
+        try:
+            copy_to_clipboard(self.last_recovered_text)
+        except Exception:
+            self.panel.show("Clipboard əlçatan deyil", color="#f38ba8", bg_color="#302020", hide_after=3000)
+            return False
+        self.panel.show("Bərpa edilmiş mətn kopyalandı", color="#a6e3a1", bg_color="#1e2e1e", hide_after=2000)
+        return True
+
+    def open_recovery_folder(self) -> bool:
+        opened = self.recovery_store.open_directory()
+        if not opened:
+            self.panel.show("Bərpa qovluğu açıla bilmədi", color="#f38ba8", bg_color="#302020", hide_after=3000)
+        return opened
+
+    def discard_saved_recording(self, pending_audio) -> None:
+        self.recovery_store.discard(pending_audio)
+
     def update_client(self, api_key: str) -> bool:
         with self._lock:
             if self.state == "processing":
@@ -1389,6 +1589,8 @@ class VoiceTypingApp:
             if self._live_factory is not None:
                 self._live_factory = lambda: create_live_transcriber(api_key)
                 self._live_disabled_until = 0.0
+            if self._recovery_client_factory is not None:
+                self._recovery_client_factory = lambda: create_client(api_key)
         try:
             old_client.close()
         except Exception:
@@ -1453,6 +1655,8 @@ class VoiceTypingApp:
             self.stream = None
             capture = self._capture_context
             self._capture_context = None
+            active_route = self._active_route
+            self._active_route = None
             self.recordings = []
             timer = self.duration_timer
             self.duration_timer = None
@@ -1466,8 +1670,27 @@ class VoiceTypingApp:
         if timer:
             timer.cancel()
         self._close_stream(stream)
+        if active_route is not None:
+            active_route.restore()
         if capture is not None:
-            capture.seal_and_snapshot()
+            chunks = capture.seal_and_snapshot()
+            audio_data, reason = validate_audio(chunks, capture.sample_rate)
+            if reason is None and audio_data is not None:
+                try:
+                    self.recovery_store.save_audio(encode_wav(audio_data, capture.sample_rate))
+                    if capture.spool is not None:
+                        capture.spool.discard()
+                except Exception:
+                    if capture.spool is not None:
+                        try:
+                            capture.spool.preserve(self.recovery_store, capture.sample_rate)
+                        except Exception:
+                            pass
+            elif capture.spool is not None:
+                try:
+                    capture.spool.discard()
+                except Exception:
+                    pass
         for live_session in live_sessions:
             if live_session is not None:
                 live_session.cancel()
@@ -1479,11 +1702,17 @@ class VoiceTypingApp:
                 close_paste_backend()
             except Exception:
                 pass
+        recovery_client = self._recovery_client
+        if recovery_client is not None:
+            self._close_recovery_client(recovery_client)
         if worker is None or not worker.is_alive():
             try:
                 self.client.close()
             except Exception:
                 pass
+        if self._recovery_thread is not None and self._recovery_thread.is_alive():
+            self._recovery_event.set()
+            self._recovery_thread.join(timeout=0.5)
         self.panel.close()
 
 
@@ -1512,6 +1741,9 @@ def run_tray(app: VoiceTypingApp) -> None:
     menu = (
         item("Start/stop recording", lambda icon, menu_item: app.toggle()),
         item("Copy last transcription", lambda icon, menu_item: app.copy_last_transcription()),
+        item("Copy recovered transcription", lambda icon, menu_item: app.copy_last_recovered_transcription()),
+        item("Retry saved recordings", lambda icon, menu_item: app.retry_saved_recordings(notify=True)),
+        item("Open saved recordings", lambda icon, menu_item: app.open_recovery_folder()),
         item("Settings (API Key)", on_change_api_key),
         item("Quit", on_quit),
     )
@@ -1676,6 +1908,9 @@ def main(argv: list[str] | None = None) -> int:
             paste_action=paste_action,
             shortcut_label=shortcut_label,
         )
+        start_recovery = getattr(app, "start_recovery_worker", None)
+        if callable(start_recovery):
+            start_recovery(lambda: create_client(api_key))
 
         def signal_handler(sig, frame) -> None:
             threading.Thread(target=app.toggle, daemon=True, name="toggle-signal").start()
