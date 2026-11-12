@@ -13,7 +13,8 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 | 4. Make wheel the source for all installers | Complete | `uv.lock` and the hash-pinned export agree. `install.sh`, AppImage, and `.deb` now validate and install one supplied wheel; the isolated installer passed twice while preserving two rollback releases. | `3a6084f` | Validate the release harness and finish the privacy, README, and changelog documentation. |
 | 5. Add release harness and documentation | Complete | The isolated source and wheel harnesses pass, cover every packaged module and both entry points, and verify the installer twice without reading the user's app state. README, changelog, privacy, metainfo, and manual smoke steps describe v2.3 behavior. | `5b1b3a5` | Validate CI syntax and make PR, manual-artifact, and tag workflows consume the same tested wheel. |
 | 6. Add CI and draft-release automation | Complete | PR/main runs source and wheel gates. Manual runs build AppImage and `.deb` from the tested wheel without publishing. Matching `v*` tags run both artifact harnesses, create checksums and `.zsync`, then prepare a draft release only. | `f505c9d` | Run the final local gates and leave desktop artifact smoke tests pending until CI produces release candidates. |
-| 7. Release gates | Developer smoke in progress; package rerun pending | The source harness passes 194 tests. A real Fedora developer launch now uses system GTK/Cairo and safely migrates legacy crash spools. Earlier wheel and Ubuntu `.deb` gates passed, but must be repeated after this runtime fix. | `c0271f3` | Complete the local F8, routing, transcription, and recovery smoke test; then rebuild and revalidate the wheel and `.deb` before any authorized push or AppImage CI run. |
+| 7. Release gates | Developer smoke in progress; package rerun pending | The source harness passes 206 tests. A real Fedora developer launch uses system GTK/Cairo, safely migrates legacy crash spools, and now has serialized rapid controls. Earlier wheel and Ubuntu `.deb` gates passed, but must be repeated after the latest runtime fixes. | `4d3aaab` | Restart the developer runtime and smoke-test normal, double, held, and processing-time F8 input; then rebuild and revalidate the wheel and `.deb` before any authorized push or AppImage CI run. |
+| 8. Stabilize rapid controls | Automated checks complete; live X11 smoke pending | Shortcut, tray, signal, and portal requests use one bounded controller. X11 repeat pairs are filtered, startup feedback is immediate, and provisional audio routes are restored safely during shutdown. | `4d3aaab` | Run the fixed developer source and verify that rapid or held F8 input cannot strand the tray icon or overlay. |
 
 ## Decisions
 
@@ -52,7 +53,7 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 ## Phase 7 local checkpoint
 
 - `scripts/release_harness.py source` passes lock/export checks, compilation,
-  and all 194 offline tests.
+  and all 206 offline tests.
 - The Fedora developer runtime starts with the distribution Python, GTK/Cairo
   modules, tray process, overlay process, and private legacy-spool migration.
 - The previous `2.3.0` wheel and `.deb` checkpoint passed clean-environment
@@ -66,3 +67,25 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 - AppImage artifact checks and the desktop smoke test remain pending because
   the AppImage toolchain intentionally runs in CI and no branch push, tag, or
   release action is authorized yet.
+
+## Rapid-control checkpoint
+
+- [x] Serialize shortcut, tray, signal, and portal toggle requests through one
+  lifetime-scoped controller.
+- [x] Preserve the requested start/stop intent across slow or failed device
+  startup without creating delayed extra recordings.
+- [x] Filter X11 release/press auto-repeat pairs while allowing a genuine key
+  release and later press.
+- [x] Show microphone preparation immediately and ignore input while a
+  transcription is already processing.
+- [x] Publish a provisional PipeWire route before changing the default input,
+  make restoration thread-safe, and keep Quit bounded if a device backend is
+  stuck.
+- [x] Pass 84 focused lifecycle tests and all 206 offline source tests.
+- [ ] Restart the Fedora developer runtime with commit `4d3aaab` and manually
+  verify normal F8, quick double press, held F8, tray toggle, and input during
+  transcription.
+- [ ] Rebuild and rerun wheel and Ubuntu `.deb` gates after the live smoke test.
+
+Next step: launch the fixed developer source for the manual rapid-control smoke
+test. No push, tag, AppImage CI run, or release action is authorized yet.
