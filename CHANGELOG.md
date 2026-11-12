@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.3.0
+
+### Added
+
+- Private recovery for recordings whose transcription fails. Pending audio uses
+  owner-only permissions and can be retried after connectivity returns.
+- PipeWire microphone selection based on the active output device, with route
+  restoration after recording.
+- One installable Python package used by developer runs, the AppImage, and the
+  Ubuntu package.
+- A release harness for source, wheel, AppImage, and `.deb` checks, plus CI for
+  manual artifact builds and tag-triggered draft releases.
+
+### Privacy
+
+- Successful recordings are not archived. Failed recordings may remain in the
+  private recovery folder until retry succeeds or the user deletes them.
+- A successful recovery retry removes its audio and keeps recovered text in
+  application memory for copying from the tray.
+- See [PRIVACY.md](PRIVACY.md).
+
 ## 2.2.0
 
 ### Improved
