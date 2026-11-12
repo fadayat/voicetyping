@@ -13,7 +13,7 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 | 4. Make wheel the source for all installers | Complete | `uv.lock` and the hash-pinned export agree. `install.sh`, AppImage, and `.deb` now validate and install one supplied wheel; the isolated installer passed twice while preserving two rollback releases. | `3a6084f` | Validate the release harness and finish the privacy, README, and changelog documentation. |
 | 5. Add release harness and documentation | Complete | The isolated source and wheel harnesses pass, cover every packaged module and both entry points, and verify the installer twice without reading the user's app state. README, changelog, privacy, metainfo, and manual smoke steps describe v2.3 behavior. | `5b1b3a5` | Validate CI syntax and make PR, manual-artifact, and tag workflows consume the same tested wheel. |
 | 6. Add CI and draft-release automation | Complete | PR/main runs source and wheel gates. Manual runs build AppImage and `.deb` from the tested wheel without publishing. Matching `v*` tags run both artifact harnesses, create checksums and `.zsync`, then prepare a draft release only. | `f505c9d` | Run the final local gates and leave desktop artifact smoke tests pending until CI produces release candidates. |
-| 7. Release gates | Local gates complete; CI/manual pending | The source harness passes 192 tests; the rebuilt wheel passes clean install, module, entry-point, and two-run installer checks; Ubuntu 24.04 builds and installs the `.deb` successfully. Final review gaps are closed. | `17ecd80` | With explicit authorization, push the branch and run the manual artifact workflow. Validate its AppImage and complete the desktop smoke test before creating a tag or publishing a reviewed draft. |
+| 7. Release gates | Developer smoke in progress; package rerun pending | The source harness passes 194 tests. A real Fedora developer launch now uses system GTK/Cairo and safely migrates legacy crash spools. Earlier wheel and Ubuntu `.deb` gates passed, but must be repeated after this runtime fix. | `c0271f3` | Complete the local F8, routing, transcription, and recovery smoke test; then rebuild and revalidate the wheel and `.deb` before any authorized push or AppImage CI run. |
 
 ## Decisions
 
@@ -52,13 +52,13 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 ## Phase 7 local checkpoint
 
 - `scripts/release_harness.py source` passes lock/export checks, compilation,
-  and all 192 offline tests.
-- A rebuilt `2.3.0` wheel passes clean-environment imports, both console entry
-  points, and two isolated `install.sh` runs without changing the private
-  configuration.
-- A disposable Ubuntu 24.04 container builds the `.deb` from that wheel, checks
-  exact metadata and package contents, installs dependencies and the package,
-  and verifies `VoiceTyping 2.3.0`. Its checksum also passes.
+  and all 194 offline tests.
+- The Fedora developer runtime starts with the distribution Python, GTK/Cairo
+  modules, tray process, overlay process, and private legacy-spool migration.
+- The previous `2.3.0` wheel and `.deb` checkpoint passed clean-environment
+  imports, both console entry points, two isolated `install.sh` runs, Ubuntu
+  24.04 build/install, version, and checksum checks. Repeat these gates after
+  the developer smoke test because the legacy-spool runtime fix changed source.
 - Shell syntax and all workflow YAML files parse successfully.
 - Final review fixes cover AppImage toggle identity across transient mounts,
   fail-closed ELF inspection, exact `.deb` metadata comparison, recovery of
