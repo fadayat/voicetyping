@@ -55,6 +55,33 @@ class RecoveryStoreTests(unittest.TestCase):
             with wave.open(str(pending), "rb") as audio:
                 self.assertEqual(audio.getframerate(), 48000)
 
+    def test_legacy_spool_timestamp_is_not_treated_as_sample_rate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RecoveryStore(Path(directory) / "recovery")
+            store.ensure_directory()
+            raw = store.root / "1794420446284008947.recording.pcm"
+            raw.write_bytes(b"\x01\x00" * 800)
+
+            pending = store.recover_incomplete_spools()
+
+            self.assertEqual(len(pending), 1)
+            self.assertFalse(raw.exists())
+            with wave.open(str(pending[0]), "rb") as audio:
+                self.assertEqual(audio.getframerate(), 16000)
+                self.assertEqual(audio.getnframes(), 800)
+
+    def test_out_of_range_spool_sample_rate_falls_back_safely(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RecoveryStore(Path(directory) / "recovery")
+            store.ensure_directory()
+            raw = store.root / "123.999999999999.recording.pcm"
+            raw.write_bytes(b"\x01\x00" * 80)
+
+            pending = store.recover_incomplete_spools()
+
+            with wave.open(str(pending[0]), "rb") as audio:
+                self.assertEqual(audio.getframerate(), 16000)
+
     def test_save_and_manual_discard(self):
         with tempfile.TemporaryDirectory() as directory:
             store = RecoveryStore(Path(directory) / "recovery")

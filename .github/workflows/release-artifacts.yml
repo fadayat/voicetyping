@@ -32,7 +32,7 @@ jobs:
             python3-dev linux-libc-dev
       - name: Install locked development dependencies
         run: |
-          uv venv --system-site-packages
+          uv venv --python python3 --system-site-packages
           uv sync --locked
       - name: Validate source and tests
         run: uv run --locked python scripts/release_harness.py source

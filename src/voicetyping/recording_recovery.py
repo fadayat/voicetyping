@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import queue
+import struct
 import subprocess
 import threading
 import time
@@ -14,6 +15,8 @@ DEFAULT_RECOVERY_DIR = Path(os.environ.get(
     "VOICETYPING_RECOVERY_DIR", Path.home() / "Documents" / "VoiceTyping Recovery"
 ))
 SAMPLE_RATE = 16_000
+MIN_SAMPLE_RATE = 1_000
+MAX_SAMPLE_RATE = 768_000
 
 
 class RecoveryStore:
@@ -32,9 +35,10 @@ class RecoveryStore:
         return self._atomic_write(root / f"{time.time_ns()}.pending.wav", wav_bytes)
 
     def start_spool(self, sample_rate: float = SAMPLE_RATE) -> "RecordingSpool":
+        sample_rate = self._valid_sample_rate(sample_rate)
         return RecordingSpool(
             self.ensure_directory()
-            / f"{time.time_ns()}.{round(sample_rate)}.recording.pcm"
+            / f"{time.time_ns()}.{sample_rate}.recording.pcm"
         )
 
     def recover_incomplete_spools(self) -> list[Path]:
@@ -44,12 +48,27 @@ class RecoveryStore:
         recovered = self._recover_stale_temporaries()
         for raw_path in sorted(self.root.glob("*.recording.pcm")):
             try:
-                rate_text = raw_path.name.removesuffix(".recording.pcm").rsplit(".", 1)[-1]
-                sample_rate = float(rate_text) if rate_text.isdigit() else SAMPLE_RATE
+                stem = raw_path.name.removesuffix(".recording.pcm")
+                name_parts = stem.rsplit(".", 1)
+                sample_rate = (
+                    self._valid_sample_rate(name_parts[1])
+                    if len(name_parts) == 2 and name_parts[1].isdigit()
+                    else SAMPLE_RATE
+                )
                 recovered.append(self._convert_raw_to_pending(raw_path, sample_rate))
-            except OSError:
+            except (OSError, OverflowError, ValueError, struct.error, wave.Error):
                 continue
         return recovered
+
+    @staticmethod
+    def _valid_sample_rate(value: float | str) -> int:
+        try:
+            sample_rate = round(float(value))
+        except (OverflowError, TypeError, ValueError):
+            return SAMPLE_RATE
+        if not MIN_SAMPLE_RATE <= sample_rate <= MAX_SAMPLE_RATE:
+            return SAMPLE_RATE
+        return sample_rate
 
     def _recover_stale_temporaries(self) -> list[Path]:
         """Promote complete staging WAVs left by a terminated app process."""
@@ -153,13 +172,14 @@ class RecoveryStore:
         return True
 
     def _convert_raw_to_pending(self, raw_path: Path, sample_rate: float) -> Path:
+        sample_rate = self._valid_sample_rate(sample_rate)
         destination = raw_path.with_name(raw_path.name.removesuffix(".recording.pcm") + ".pending.wav")
         temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
         try:
             with wave.open(str(temporary), "wb") as output, raw_path.open("rb") as source:
                 output.setnchannels(1)
                 output.setsampwidth(2)
-                output.setframerate(round(sample_rate))
+                output.setframerate(sample_rate)
                 while block := source.read(256 * 1024):
                     output.writeframesraw(block)
             os.chmod(temporary, 0o600)

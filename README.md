@@ -198,6 +198,7 @@ Add optional settings to the existing configuration JSON, then restart the app:
 ## Development
 
 ```bash
+uv venv --python "$(command -v python3)" --system-site-packages
 uv sync --locked
 uv run voicetyping
 uv run python -m unittest discover -s tests
@@ -208,7 +209,8 @@ Build one wheel with `uv build --wheel --out-dir dist`; release packages consume
 that same wheel. `requirements.txt` is generated with hashes from `uv.lock` for
 package builders. GTK3, Cairo, GObject, Tkinter, PortAudio, and clipboard tools
 remain system dependencies; install them with the package manager commands
-above. The app uses GTK3/Cairo
+above. The development environment deliberately uses the distribution's
+Python so those desktop modules remain visible. The app uses GTK3/Cairo
 for its transparent indicator, Google GenAI for transcription, and XDG Desktop
 Portals or desktop-specific shortcut and paste backends. See [DESIGN.md](DESIGN.md)
 for the internal design, [HARNESS.md](HARNESS.md) for build checks, and

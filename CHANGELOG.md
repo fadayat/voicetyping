@@ -13,6 +13,13 @@
 - A release harness for source, wheel, AppImage, and `.deb` checks, plus CI for
   manual artifact builds and tag-triggered draft releases.
 
+### Fixed
+
+- Legacy crash spools without an encoded sample rate now recover at 16 kHz
+  instead of interpreting their timestamp as an invalid WAV sample rate.
+- Developer environments use the distribution Python so GTK, Cairo, and
+  GObject modules installed by the system package manager remain available.
+
 ### Privacy
 
 - Successful recordings are not archived. Failed recordings may remain in the
