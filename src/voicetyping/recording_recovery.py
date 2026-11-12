@@ -40,7 +40,8 @@ class RecoveryStore:
     def recover_incomplete_spools(self) -> list[Path]:
         if not self.root.exists():
             return []
-        recovered = []
+        self.ensure_directory()
+        recovered = self._recover_stale_temporaries()
         for raw_path in sorted(self.root.glob("*.recording.pcm")):
             try:
                 rate_text = raw_path.name.removesuffix(".recording.pcm").rsplit(".", 1)[-1]
@@ -49,6 +50,86 @@ class RecoveryStore:
             except OSError:
                 continue
         return recovered
+
+    def _recover_stale_temporaries(self) -> list[Path]:
+        """Promote complete staging WAVs left by a terminated app process."""
+        recovered = []
+        for temporary in sorted(self.root.glob(".*.pending.wav.*.tmp")):
+            if temporary.is_symlink() or not temporary.is_file():
+                continue
+            parsed = self._parse_temporary_name(temporary.name)
+            if parsed is None:
+                continue
+            destination_name, owner_pid = parsed
+            # A temporary file owned by a live process may still be in flight.
+            if self._pid_is_alive(owner_pid):
+                continue
+            destination = self.root / destination_name
+            raw_path = self.root / (
+                destination_name.removesuffix(".pending.wav") + ".recording.pcm"
+            )
+            try:
+                if destination.exists() or raw_path.exists():
+                    temporary.unlink()
+                    self._sync_directory(self.root)
+                    continue
+                if not self._is_complete_wav(temporary):
+                    temporary.unlink()
+                    self._sync_directory(self.root)
+                    continue
+                os.chmod(temporary, 0o600)
+                with temporary.open("rb") as handle:
+                    os.fsync(handle.fileno())
+                os.replace(temporary, destination)
+                self._sync_directory(self.root)
+                recovered.append(destination)
+            except OSError:
+                # Preserve unreadable or otherwise uncertain data for a later run.
+                continue
+        return recovered
+
+    @staticmethod
+    def _parse_temporary_name(name: str) -> tuple[str, int] | None:
+        if not name.startswith(".") or not name.endswith(".tmp"):
+            return None
+        body = name[1:-4]
+        try:
+            destination_name, pid_text = body.rsplit(".", 1)
+        except ValueError:
+            return None
+        if not destination_name.endswith(".pending.wav") or not pid_text.isdigit():
+            return None
+        owner_pid = int(pid_text)
+        if owner_pid <= 0:
+            return None
+        return destination_name, owner_pid
+
+    @staticmethod
+    def _pid_is_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, OverflowError):
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return True
+        return True
+
+    @staticmethod
+    def _is_complete_wav(path: Path) -> bool:
+        try:
+            with wave.open(str(path), "rb") as audio:
+                channels = audio.getnchannels()
+                sample_width = audio.getsampwidth()
+                sample_rate = audio.getframerate()
+                frame_count = audio.getnframes()
+                if min(channels, sample_width, sample_rate, frame_count) <= 0:
+                    return False
+                audio.setpos(frame_count - 1)
+                return len(audio.readframes(1)) == channels * sample_width
+        except (EOFError, wave.Error):
+            return False
 
     def pending_files(self) -> list[Path]:
         return sorted(self.root.glob("*.pending.wav")) if self.root.exists() else []

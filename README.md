@@ -155,7 +155,8 @@ animation requires a composited desktop.
   failed recording may be retried later after the original session has ended.
 - Successful recordings are not archived. If transcription fails, VoiceTyping
   may temporarily keep a private recovery recording until retry succeeds or
-  you delete it. See [PRIVACY.md](PRIVACY.md) for details.
+  you delete it. Successfully recovered texts stay queued in memory until you
+  copy them from the tray or exit. See [PRIVACY.md](PRIVACY.md) for details.
 - VoiceTyping does not log audio, transcript text, or API keys.
 - The saved API key is plain text in
   `~/.config/voicetyping/config.json`, protected with owner-only permissions

@@ -11,7 +11,9 @@ the original recording session has ended. By default, the files are under
 permissions (`0700`) and pending audio files use owner-only permissions
 (`0600`). A pending recording remains until a retry succeeds or the user
 manually deletes it. A successful retry deletes the audio and keeps the
-recovered text in application memory for copying from the tray.
+recovered text in application memory for copying from the tray. If several
+recordings recover, all recovered texts remain queued in memory until they are
+successfully copied or the application exits.
 
 VoiceTyping does not log audio, transcript text, or API keys. The Gemini API
 key is stored as plain text in `~/.config/voicetyping/config.json` with

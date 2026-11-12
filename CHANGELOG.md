@@ -17,8 +17,10 @@
 
 - Successful recordings are not archived. Failed recordings may remain in the
   private recovery folder until retry succeeds or the user deletes them.
-- A successful recovery retry removes its audio and keeps recovered text in
-  application memory for copying from the tray.
+- A successful recovery retry removes its audio and queues every recovered text
+  in application memory until the user copies it from the tray.
+- Complete temporary WAV files left by an interrupted atomic save are promoted
+  to pending recovery files on the next start; invalid staging files are cleaned.
 - See [PRIVACY.md](PRIVACY.md).
 
 ## 2.2.0

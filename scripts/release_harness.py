@@ -294,12 +294,24 @@ def appimage_checks(args: argparse.Namespace) -> None:
         check_command_version([str(image), "--version"], expected, env=environment)
         environment["APPIMAGE_EXTRACT_AND_RUN"] = "1"
         check_command_version([str(image), "--version"], expected, env=environment)
+    check_static_appimage_runtime(image)
+
+
+def check_static_appimage_runtime(image: Path) -> None:
     if shutil.which("readelf"):
-        dynamic = subprocess.run(["readelf", "-d", str(image)], capture_output=True, text=True)
-        if "(NEEDED)" in dynamic.stdout:
+        inspections = {}
+        for mode in ("-d", "-l"):
+            result = subprocess.run(
+                ["readelf", mode, str(image)], capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                detail = result.stderr.strip() or "no diagnostic output"
+                raise RuntimeError(f"readelf {mode} could not inspect AppImage: {detail}")
+            inspections[mode] = result.stdout
+        dynamic = inspections["-d"]
+        if "(NEEDED)" in dynamic:
             raise RuntimeError("AppImage runtime has dynamic library dependencies.")
-        program = subprocess.run(["readelf", "-l", str(image)], capture_output=True, text=True)
-        if "Requesting program interpreter" in program.stdout:
+        if "Requesting program interpreter" in inspections["-l"]:
             raise RuntimeError("AppImage runtime requires a host ELF interpreter.")
     else:
         raise RuntimeError("readelf is required for AppImage runtime checks.")
@@ -308,11 +320,18 @@ def appimage_checks(args: argparse.Namespace) -> None:
 def deb_checks(args: argparse.Namespace) -> None:
     package = require_file(Path(args.package), "Debian package")
     expected = args.version or read_package_version()
-    metadata = run_capture(["dpkg-deb", "--field", str(package)])
-    if f"Version: {expected}-1" not in metadata:
-        raise RuntimeError(f"Debian metadata does not report Version: {expected}-1")
-    if "Architecture: amd64" not in metadata:
-        raise RuntimeError("Debian package architecture is not amd64.")
+    version = run_capture(["dpkg-deb", "--field", str(package), "Version"]).strip()
+    if version != f"{expected}-1":
+        raise RuntimeError(
+            f"Debian metadata version is {version!r}, expected {expected}-1."
+        )
+    architecture = run_capture(
+        ["dpkg-deb", "--field", str(package), "Architecture"]
+    ).strip()
+    if architecture != "amd64":
+        raise RuntimeError(
+            f"Debian package architecture is {architecture!r}, expected 'amd64'."
+        )
     contents = run_capture(["dpkg-deb", "--contents", str(package)])
     for module in PACKAGE_MODULES:
         if f"voicetyping/{module}.py" not in contents:

@@ -64,6 +64,59 @@ class RecoveryStoreTests(unittest.TestCase):
             store.discard(path)
             self.assertEqual(store.pending_files(), [])
 
+    def test_complete_staging_wav_is_recovered_after_process_termination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RecoveryStore(Path(directory) / "recovery")
+            store.ensure_directory()
+            destination = store.root / "123.pending.wav"
+            temporary = store.root / f".{destination.name}.{os.getpid() + 1}.tmp"
+            temporary.write_bytes(vt.encode_wav(np.ones(800, dtype=np.int16)))
+            temporary.chmod(0o644)
+
+            with mock.patch.object(store, "_pid_is_alive", return_value=False):
+                recovered = store.recover_incomplete_spools()
+
+            self.assertEqual(recovered, [destination])
+            self.assertFalse(temporary.exists())
+            self.assertEqual(os.stat(destination).st_mode & 0o777, 0o600)
+            with wave.open(str(destination), "rb") as audio:
+                self.assertEqual(audio.getnframes(), 800)
+
+    def test_invalid_staging_wav_is_removed_without_touching_unrelated_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RecoveryStore(Path(directory) / "recovery")
+            store.ensure_directory()
+            temporary = store.root / f".broken.pending.wav.{os.getpid() + 1}.tmp"
+            unrelated = store.root / ".notes.tmp"
+            matching_symlink = (
+                store.root / f".linked.pending.wav.{os.getpid() + 2}.tmp"
+            )
+            temporary.write_bytes(b"partial wav")
+            unrelated.write_text("keep", encoding="utf-8")
+            matching_symlink.symlink_to(unrelated)
+
+            with mock.patch.object(store, "_pid_is_alive", return_value=False):
+                self.assertEqual(store.recover_incomplete_spools(), [])
+
+            self.assertFalse(temporary.exists())
+            self.assertEqual(unrelated.read_text(encoding="utf-8"), "keep")
+            self.assertTrue(matching_symlink.is_symlink())
+
+    def test_live_process_staging_wav_is_not_touched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RecoveryStore(Path(directory) / "recovery")
+            store.ensure_directory()
+            temporary = store.root / f".active.pending.wav.{os.getpid()}.tmp"
+            temporary.write_bytes(vt.encode_wav(np.ones(80, dtype=np.int16)))
+
+            with mock.patch.object(store, "_pid_is_alive", return_value=True):
+                self.assertEqual(store.recover_incomplete_spools(), [])
+
+            self.assertTrue(temporary.exists())
+
+    def test_impossible_pid_is_not_alive(self):
+        self.assertFalse(RecoveryStore._pid_is_alive(10**100))
+
 
 class RecoveryAppTests(unittest.TestCase):
     def test_transcription_failure_preserves_pending_wav(self):
@@ -103,6 +156,58 @@ class RecoveryAppTests(unittest.TestCase):
             with mock.patch("voicetyping.app.copy_to_clipboard") as copy:
                 self.assertTrue(app.copy_last_recovered_transcription())
             copy.assert_called_once_with("Recovered words")
+            self.assertEqual(app._recovered_texts, [])
+            self.assertIsNone(app.last_recovered_text)
+            app.shutdown()
+
+    def test_multiple_recoveries_remain_accessible_until_successful_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RecoveryStore(Path(directory) / "recovery")
+            pending = [store.save_audio(value) for value in (b"first", b"second")]
+            app = vt.VoiceTypingApp(FakeClient(), FakePanel(), recovery_store=store)
+            app._batch_transcribe = mock.Mock(side_effect=["First text", "Second text"])
+            app._recovery_client_factory = lambda: FakeClient()
+            app._recovery_event.set()
+            with mock.patch(
+                "voicetyping.app.sf.read",
+                return_value=(np.ones(4000, dtype=np.int16), 16000),
+            ):
+                app._recovery_thread = threading.Thread(
+                    target=app._recovery_loop, daemon=True
+                )
+                app._recovery_thread.start()
+                deadline = time.monotonic() + 2
+                while any(path.exists() for path in pending) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+
+            self.assertFalse(any(path.exists() for path in pending))
+            self.assertEqual(app._recovered_texts, ["First text", "Second text"])
+            self.assertEqual(app.last_recovered_text, "Second text")
+            with mock.patch("voicetyping.app.copy_to_clipboard") as copy:
+                self.assertTrue(app.copy_last_recovered_transcription())
+            copy.assert_called_once_with("First text\n\nSecond text")
+            self.assertEqual(app._recovered_texts, [])
+            self.assertIsNone(app.last_recovered_text)
+            app.shutdown()
+
+    def test_clipboard_failure_keeps_recovered_text_queued(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = vt.VoiceTypingApp(
+                FakeClient(),
+                FakePanel(),
+                recovery_store=RecoveryStore(Path(directory) / "recovery"),
+            )
+            app._recovered_texts = ["Keep this text"]
+            app.last_recovered_text = "Keep this text"
+
+            with mock.patch(
+                "voicetyping.app.copy_to_clipboard",
+                side_effect=RuntimeError("clipboard unavailable"),
+            ):
+                self.assertFalse(app.copy_last_recovered_transcription())
+
+            self.assertEqual(app._recovered_texts, ["Keep this text"])
+            self.assertEqual(app.last_recovered_text, "Keep this text")
             app.shutdown()
 
     def test_retry_pause_prevents_removing_pending_audio(self):

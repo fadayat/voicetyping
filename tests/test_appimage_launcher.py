@@ -1,6 +1,8 @@
 import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -26,6 +28,7 @@ class AppImageLauncherTests(unittest.TestCase):
         self.environment = os.environ.copy()
         self.environment.update(
             APPDIR=str(self.appdir),
+            APPIMAGE=str(self.root / "Voice Typing.AppImage"),
             CAPTURE_ARGS=str(self.capture_args),
         )
 
@@ -87,6 +90,70 @@ class AppImageLauncherTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertFalse(self.capture_args.exists())
+
+    def test_toggle_accepts_same_image_running_from_a_different_mount(self):
+        runtime_dir = self.root / "runtime"
+        runtime_dir.mkdir()
+        running_appdir = self.root / "different mount"
+        running_python = running_appdir / "usr/bin/python3"
+        running_python.parent.mkdir(parents=True)
+        running_python.symlink_to(sys.executable)
+        module_root = self.root / "module-root"
+        package = module_root / "voicetyping"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "app.py").write_text(
+            "import os\n"
+            "import signal\n"
+            "import time\n"
+            "from pathlib import Path\n"
+            "def stop(*_args):\n"
+            "    raise SystemExit(0)\n"
+            "signal.signal(signal.SIGUSR1, stop)\n"
+            "Path(os.environ['READY_FILE']).write_text('ready', encoding='ascii')\n"
+            "while True:\n"
+            "    time.sleep(1)\n",
+            encoding="utf-8",
+        )
+        ready_file = self.root / "ready"
+        running_environment = os.environ.copy()
+        running_environment.update(
+            APPDIR=str(running_appdir),
+            APPIMAGE=self.environment["APPIMAGE"],
+            PYTHONPATH=str(module_root),
+            READY_FILE=str(ready_file),
+        )
+        process = subprocess.Popen(
+            [str(running_python), "-m", "voicetyping.app"],
+            env=running_environment,
+            cwd=self.root,
+        )
+        self.addCleanup(self.stop_process, process)
+        for _attempt in range(100):
+            if ready_file.is_file():
+                break
+            time.sleep(0.01)
+        self.assertTrue(ready_file.is_file(), "test process did not become ready")
+        (runtime_dir / f"voicetyping-{os.getuid()}.pid").write_text(
+            str(process.pid), encoding="ascii"
+        )
+        self.environment["XDG_RUNTIME_DIR"] = str(runtime_dir)
+
+        result = self.run_launcher("--toggle")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(process.wait(timeout=2), 0)
+        self.assertFalse(self.capture_args.exists())
+
+    @staticmethod
+    def stop_process(process):
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
 
 
 if __name__ == "__main__":

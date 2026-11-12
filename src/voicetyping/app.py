@@ -877,6 +877,7 @@ class VoiceTypingApp:
         self.duration_timer: threading.Timer | None = None
         self.last_text: str | None = None
         self.last_recovered_text: str | None = None
+        self._recovered_texts: list[str] = []
         self.listener = None
         self._last_toggle = 0.0
         self._lock = threading.RLock()
@@ -1555,8 +1556,10 @@ class VoiceTypingApp:
                         should_stop=lambda: self._recovery_pause.is_set(),
                     ).strip()
                     if text and not self._recovery_pause.is_set() and not self._shutdown.is_set():
+                        with self._lock:
+                            self._recovered_texts.append(text)
+                            self.last_recovered_text = text
                         self.recovery_store.discard(pending)
-                        self.last_recovered_text = text
                         self.panel.show("Saxlanmış mətn bərpa edildi", color="#a6e3a1", bg_color="#1e2e1e", hide_after=5000)
             except Exception as error:
                 print(f"Saved recording retry failed ({type(error).__name__}).")
@@ -1579,15 +1582,29 @@ class VoiceTypingApp:
             pass
 
     def copy_last_recovered_transcription(self) -> bool:
-        if not self.last_recovered_text:
+        with self._lock:
+            recovered_texts = tuple(self._recovered_texts)
+        if not recovered_texts:
             self.panel.show("Yeni bərpa edilmiş mətn yoxdur", color="#fab387", bg_color="#2d2520", hide_after=2500)
             return False
+        clipboard_text = "\n\n".join(recovered_texts)
         try:
-            copy_to_clipboard(self.last_recovered_text)
+            copy_to_clipboard(clipboard_text)
         except Exception:
             self.panel.show("Clipboard əlçatan deyil", color="#f38ba8", bg_color="#302020", hide_after=3000)
             return False
-        self.panel.show("Bərpa edilmiş mətn kopyalandı", color="#a6e3a1", bg_color="#1e2e1e", hide_after=2000)
+        with self._lock:
+            if self._recovered_texts[:len(recovered_texts)] == list(recovered_texts):
+                del self._recovered_texts[:len(recovered_texts)]
+            self.last_recovered_text = (
+                self._recovered_texts[-1] if self._recovered_texts else None
+            )
+        message = (
+            "Bərpa edilmiş mətn kopyalandı"
+            if len(recovered_texts) == 1
+            else f"{len(recovered_texts)} bərpa edilmiş mətn kopyalandı"
+        )
+        self.panel.show(message, color="#a6e3a1", bg_color="#1e2e1e", hide_after=2000)
         return True
 
     def open_recovery_folder(self) -> bool:
@@ -1761,7 +1778,7 @@ def run_tray(app: VoiceTypingApp) -> None:
     menu = (
         item("Start/stop recording", lambda icon, menu_item: app.toggle()),
         item("Copy last transcription", lambda icon, menu_item: app.copy_last_transcription()),
-        item("Copy recovered transcription", lambda icon, menu_item: app.copy_last_recovered_transcription()),
+        item("Copy recovered transcriptions", lambda icon, menu_item: app.copy_last_recovered_transcription()),
         item("Retry saved recordings", lambda icon, menu_item: app.retry_saved_recordings(notify=True)),
         item("Open saved recordings", lambda icon, menu_item: app.open_recovery_folder()),
         item("Settings (API Key)", on_change_api_key),
