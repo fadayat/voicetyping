@@ -12,6 +12,7 @@ SYSTEM_PYTHON_BIN="$(command -v python3)"
 STAGE_DIR=""
 LEGACY_STAGE_DIR=""
 CURRENT_TMP=""
+WHEEL_BUILD_DIR=""
 
 cleanup() {
     if [[ -n "$STAGE_DIR" && -d "$STAGE_DIR" ]]; then
@@ -22,6 +23,9 @@ cleanup() {
     fi
     if [[ -n "$CURRENT_TMP" && -L "$CURRENT_TMP" ]]; then
         rm -f -- "$CURRENT_TMP"
+    fi
+    if [[ -n "$WHEEL_BUILD_DIR" && -d "$WHEEL_BUILD_DIR" ]]; then
+        rm -rf -- "$WHEEL_BUILD_DIR"
     fi
 }
 trap cleanup EXIT
@@ -68,6 +72,7 @@ if [[ ! -L "$INSTALL_ROOT/current" && -f "$INSTALL_ROOT/voicetyping.py" && ! -L 
             voicetyping.py \
             audio_routing.py \
             live_transcription.py \
+            recording_recovery.py \
             auto_paste.py \
             voice_overlay.py \
             voice_visual.py \
@@ -115,8 +120,81 @@ if ! "$VENV_PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 
     exit 1
 fi
 
+SOURCE_VERSION="$("$SYSTEM_PYTHON_BIN" - "$SCRIPT_DIR/src/voicetyping/__init__.py" <<'PY'
+import ast
+import pathlib
+import sys
+
+tree = ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+for node in tree.body:
+    if isinstance(node, ast.Assign) and any(
+        isinstance(target, ast.Name) and target.id == "__version__"
+        for target in node.targets
+    ):
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            print(node.value.value)
+            raise SystemExit
+raise SystemExit("Could not read voicetyping.__version__")
+PY
+)"
+
+WHEEL_PATH="${VOICETYPING_WHEEL:-}"
+if [[ -n "$WHEEL_PATH" ]]; then
+    if [[ ! -f "$WHEEL_PATH" ]]; then
+        echo "❌ VOICETYPING_WHEEL is not a file: $WHEEL_PATH" >&2
+        exit 1
+    fi
+else
+    WHEEL_BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/voicetyping-wheel.XXXXXX")"
+    echo "📦 Building the VoiceTyping wheel from this source checkout..."
+    if command -v uv >/dev/null 2>&1; then
+        uv build --wheel --out-dir "$WHEEL_BUILD_DIR" "$SCRIPT_DIR"
+    else
+        "$VENV_PYTHON_BIN" -m pip wheel --no-deps --wheel-dir "$WHEEL_BUILD_DIR" "$SCRIPT_DIR"
+    fi
+    shopt -s nullglob
+    built_wheels=("$WHEEL_BUILD_DIR"/voicetyping-*.whl)
+    shopt -u nullglob
+    if [[ ${#built_wheels[@]} -ne 1 ]]; then
+        echo "❌ Expected one built VoiceTyping wheel, found ${#built_wheels[@]}." >&2
+        exit 1
+    fi
+    WHEEL_PATH="${built_wheels[0]}"
+fi
+WHEEL_PATH="$("$SYSTEM_PYTHON_BIN" -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve())' "$WHEEL_PATH")"
+WHEEL_VERSION="$("$SYSTEM_PYTHON_BIN" - "$WHEEL_PATH" <<'PY'
+import email.parser
+import pathlib
+import sys
+import zipfile
+
+wheel = pathlib.Path(sys.argv[1])
+with zipfile.ZipFile(wheel) as archive:
+    metadata_files = [
+        name for name in archive.namelist()
+        if name.endswith(".dist-info/METADATA")
+        and pathlib.PurePosixPath(name).parent.name.startswith("voicetyping-")
+    ]
+    if len(metadata_files) != 1:
+        raise SystemExit("Wheel does not contain one VoiceTyping METADATA file")
+    metadata = email.parser.BytesParser().parsebytes(archive.read(metadata_files[0]))
+version = metadata.get("Version")
+if not version:
+    raise SystemExit("Wheel metadata has no Version")
+print(version)
+PY
+)"
+if [[ "$WHEEL_VERSION" != "$SOURCE_VERSION" ]]; then
+    echo "❌ Wheel version $WHEEL_VERSION does not match source version $SOURCE_VERSION." >&2
+    exit 1
+fi
+
 echo "🐍 Installing locked Python libraries into the private environment..."
-PYTHONNOUSERSITE=1 "$VENV_PYTHON_BIN" -m pip install --ignore-installed --requirement "$SCRIPT_DIR/requirements.txt"
+PYTHONNOUSERSITE=1 "$VENV_PYTHON_BIN" -m pip install \
+    --ignore-installed \
+    --require-hashes \
+    --requirement "$SCRIPT_DIR/requirements.txt"
+PYTHONNOUSERSITE=1 "$VENV_PYTHON_BIN" -m pip install --no-deps "$WHEEL_PATH"
 PYTHONNOUSERSITE=1 "$VENV_PYTHON_BIN" - "$STAGE_DIR/.venv" <<'PY'
 import importlib.metadata
 import pathlib
@@ -132,6 +210,7 @@ required_distributions = (
     "pystray",
     "sounddevice",
     "soundfile",
+    "voicetyping",
 )
 for name in required_distributions:
     location = pathlib.Path(importlib.metadata.distribution(name).locate_file("")).resolve()
@@ -140,32 +219,29 @@ for name in required_distributions:
 print("Locked application dependencies are installed inside the release environment.")
 PY
 
-echo "📂 Staging VoiceTyping modules..."
-for source_file in \
-    voicetyping.py \
-    audio_routing.py \
-    live_transcription.py \
-    auto_paste.py \
-    voice_overlay.py \
-    voice_visual.py \
-    voicetyping_toggle.py \
-    setup_shortcut.py \
-    desktop_environment.py \
-    desktop_integration.py \
-    shortcuts.py \
-    xdg_portal.py; do
-    install -m 0644 "$SCRIPT_DIR/$source_file" "$STAGE_DIR/$source_file"
-done
+# Virtual-environment entry-point shebangs contain the temporary staging path.
+# Replace the two application commands with relocatable wrappers before the
+# release directory is moved into place.
+cat > "$STAGE_DIR/.venv/bin/voicetyping" <<'EOF'
+#!/bin/sh
+bindir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$bindir/python" -m voicetyping.app "$@"
+EOF
+cat > "$STAGE_DIR/.venv/bin/voicetyping-toggle" <<'EOF'
+#!/bin/sh
+bindir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$bindir/python" -m voicetyping.voicetyping_toggle "$@"
+EOF
+chmod 0755 "$STAGE_DIR/.venv/bin/voicetyping" "$STAGE_DIR/.venv/bin/voicetyping-toggle"
 
-PYTHONNOUSERSITE=1 "$VENV_PYTHON_BIN" -m compileall -q "$STAGE_DIR"
-PYTHONNOUSERSITE=1 "$VENV_PYTHON_BIN" -c 'import auto_paste, desktop_environment, desktop_integration, shortcuts, xdg_portal, voicetyping'
-APP_VERSION="$(PYTHONNOUSERSITE=1 "$VENV_PYTHON_BIN" "$STAGE_DIR/voicetyping.py" --version | awk '{print $2}')"
-if [[ -z "$APP_VERSION" ]]; then
-    echo "❌ Could not read the staged VoiceTyping version." >&2
+PYTHONNOUSERSITE=1 "$VENV_PYTHON_BIN" -c 'import voicetyping, voicetyping.audio_routing, voicetyping.recording_recovery'
+APP_VERSION="$(PYTHONNOUSERSITE=1 "$VENV_PYTHON_BIN" -c 'import voicetyping; print(voicetyping.__version__)')"
+if [[ "$APP_VERSION" != "$SOURCE_VERSION" ]]; then
+    echo "❌ Installed VoiceTyping version $APP_VERSION does not match $SOURCE_VERSION." >&2
     exit 1
 fi
-if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "❌ Invalid staged VoiceTyping version: $APP_VERSION" >&2
+if [[ "$(PYTHONNOUSERSITE=1 "$STAGE_DIR/.venv/bin/voicetyping" --version)" != "VoiceTyping $APP_VERSION" ]]; then
+    echo "❌ The staged VoiceTyping command failed its version check." >&2
     exit 1
 fi
 
@@ -188,14 +264,13 @@ desktop_quote() {
 }
 
 DESKTOP_FILE="$APPLICATIONS_DIR/voicetyping.desktop"
-DESKTOP_PYTHON_PATH="$(desktop_quote "$INSTALL_ROOT/current/.venv/bin/python")"
-DESKTOP_APP_PATH="$(desktop_quote "$INSTALL_ROOT/current/voicetyping.py")"
+DESKTOP_COMMAND="$(desktop_quote "$INSTALL_ROOT/current/.venv/bin/voicetyping")"
 cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Version=1.0
 Name=VoiceTyping
 Comment=Speech to text converter
-Exec=$DESKTOP_PYTHON_PATH $DESKTOP_APP_PATH
+Exec=$DESKTOP_COMMAND
 Icon=audio-input-microphone
 Terminal=false
 Type=Application
@@ -218,10 +293,14 @@ CURRENT_TMP=""
 
 # The XDG autostart generator ignores desktop entries whose Exec path does not
 # exist yet. Reload only after the current release symlink is in place.
-systemctl --user daemon-reload
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user daemon-reload || true
+fi
 
 echo "⌨️ Configuring GNOME shortcut..."
-PYTHONNOUSERSITE=1 "$INSTALL_ROOT/current/.venv/bin/python" "$INSTALL_ROOT/current/setup_shortcut.py" || true
+VOICETYPING_LAUNCHER="$INSTALL_ROOT/current/.venv/bin/voicetyping" \
+    PYTHONNOUSERSITE=1 \
+    "$INSTALL_ROOT/current/.venv/bin/python" -m voicetyping.setup_shortcut || true
 
 echo "=================================================="
 echo "✅ Installation completed. Launch VoiceTyping from the Applications menu."

@@ -2,7 +2,24 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="${1:-2.2.0}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+SOURCE_VERSION="$("$PYTHON_BIN" - "$PROJECT_DIR/src/voicetyping/__init__.py" <<'PY'
+import ast
+import pathlib
+import sys
+
+tree = ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+for node in tree.body:
+    if isinstance(node, ast.Assign) and any(
+        isinstance(target, ast.Name) and target.id == "__version__"
+        for target in node.targets
+    ) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+        print(node.value.value)
+        raise SystemExit
+raise SystemExit("Could not read voicetyping.__version__")
+PY
+)"
+VERSION="${1:-$SOURCE_VERSION}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/dist}"
 BUILDER="${APPIMAGE_BUILDER:-appimage-builder}"
 APPIMAGETOOL="${APPIMAGETOOL:-}"
@@ -18,6 +35,52 @@ trap cleanup EXIT
 
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "Version must use MAJOR.MINOR.PATCH format." >&2
+    exit 2
+fi
+if [[ "$VERSION" != "$SOURCE_VERSION" ]]; then
+    echo "Version $VERSION does not match source version $SOURCE_VERSION." >&2
+    exit 2
+fi
+
+WHEEL_PATH="${VOICETYPING_WHEEL:-}"
+if [[ -z "$WHEEL_PATH" ]]; then
+    shopt -s nullglob
+    wheel_candidates=("$PROJECT_DIR"/dist/voicetyping-"$VERSION"-*.whl)
+    shopt -u nullglob
+    if [[ ${#wheel_candidates[@]} -ne 1 ]]; then
+        echo "Expected one VoiceTyping $VERSION wheel in dist; set VOICETYPING_WHEEL." >&2
+        exit 2
+    fi
+    WHEEL_PATH="${wheel_candidates[0]}"
+fi
+if [[ ! -f "$WHEEL_PATH" ]]; then
+    echo "VOICETYPING_WHEEL is not a file: $WHEEL_PATH" >&2
+    exit 2
+fi
+WHEEL_PATH="$("$PYTHON_BIN" -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve())' "$WHEEL_PATH")"
+WHEEL_VERSION="$("$PYTHON_BIN" - "$WHEEL_PATH" <<'PY'
+import email.parser
+import pathlib
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    files = [
+        name for name in archive.namelist()
+        if name.endswith(".dist-info/METADATA")
+        and pathlib.PurePosixPath(name).parent.name.startswith("voicetyping-")
+    ]
+    if len(files) != 1:
+        raise SystemExit("Wheel does not contain one VoiceTyping METADATA file")
+    metadata = email.parser.BytesParser().parsebytes(archive.read(files[0]))
+version = metadata.get("Version")
+if not version:
+    raise SystemExit("Wheel metadata has no Version")
+print(version)
+PY
+)"
+if [[ "$WHEEL_VERSION" != "$VERSION" ]]; then
+    echo "Wheel version $WHEEL_VERSION does not match requested version $VERSION." >&2
     exit 2
 fi
 
@@ -56,6 +119,7 @@ sed -i -E "s/version: [0-9]+\.[0-9]+\.[0-9]+/version: $VERSION/" "$BUILD_DIR/App
 (
     cd "$BUILD_DIR"
     VOICETYPING_PROJECT_DIR="$PROJECT_DIR" \
+        VOICETYPING_WHEEL="$WHEEL_PATH" \
         APPIMAGE_EXTRACT_AND_RUN=1 \
         "$BUILDER" --recipe "$BUILD_DIR/AppImageBuilder.yml" \
         --skip-tests --skip-appimage

@@ -2,9 +2,25 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="${1:-2.2.0}"
 ARCH="${ARCH:-amd64}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+SOURCE_VERSION="$("$PYTHON_BIN" - "$PROJECT_DIR/src/voicetyping/__init__.py" <<'PY'
+import ast
+import pathlib
+import sys
+
+tree = ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+for node in tree.body:
+    if isinstance(node, ast.Assign) and any(
+        isinstance(target, ast.Name) and target.id == "__version__"
+        for target in node.targets
+    ) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+        print(node.value.value)
+        raise SystemExit
+raise SystemExit("Could not read voicetyping.__version__")
+PY
+)"
+VERSION="${1:-$SOURCE_VERSION}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_DIR/dist}"
 PACKAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/voicetyping-deb.XXXXXX")"
 
@@ -15,6 +31,52 @@ trap cleanup EXIT
 
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "Version must use MAJOR.MINOR.PATCH format." >&2
+    exit 2
+fi
+if [[ "$VERSION" != "$SOURCE_VERSION" ]]; then
+    echo "Version $VERSION does not match source version $SOURCE_VERSION." >&2
+    exit 2
+fi
+
+WHEEL_PATH="${VOICETYPING_WHEEL:-}"
+if [[ -z "$WHEEL_PATH" ]]; then
+    shopt -s nullglob
+    wheel_candidates=("$PROJECT_DIR"/dist/voicetyping-"$VERSION"-*.whl)
+    shopt -u nullglob
+    if [[ ${#wheel_candidates[@]} -ne 1 ]]; then
+        echo "Expected one VoiceTyping $VERSION wheel in dist; set VOICETYPING_WHEEL." >&2
+        exit 2
+    fi
+    WHEEL_PATH="${wheel_candidates[0]}"
+fi
+if [[ ! -f "$WHEEL_PATH" ]]; then
+    echo "VOICETYPING_WHEEL is not a file: $WHEEL_PATH" >&2
+    exit 2
+fi
+WHEEL_PATH="$("$PYTHON_BIN" -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve())' "$WHEEL_PATH")"
+WHEEL_VERSION="$("$PYTHON_BIN" - "$WHEEL_PATH" <<'PY'
+import email.parser
+import pathlib
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    files = [
+        name for name in archive.namelist()
+        if name.endswith(".dist-info/METADATA")
+        and pathlib.PurePosixPath(name).parent.name.startswith("voicetyping-")
+    ]
+    if len(files) != 1:
+        raise SystemExit("Wheel does not contain one VoiceTyping METADATA file")
+    metadata = email.parser.BytesParser().parsebytes(archive.read(files[0]))
+version = metadata.get("Version")
+if not version:
+    raise SystemExit("Wheel metadata has no Version")
+print(version)
+PY
+)"
+if [[ "$WHEEL_VERSION" != "$VERSION" ]]; then
+    echo "Wheel version $WHEEL_VERSION does not match requested version $VERSION." >&2
     exit 2
 fi
 
@@ -34,7 +96,6 @@ done
 APP_ROOT="$PACKAGE_ROOT/opt/voicetyping"
 install -d \
     "$PACKAGE_ROOT/DEBIAN" \
-    "$APP_ROOT/app" \
     "$APP_ROOT/vendor" \
     "$PACKAGE_ROOT/usr/bin" \
     "$PACKAGE_ROOT/usr/share/applications" \
@@ -44,26 +105,18 @@ install -d \
     "$PACKAGE_ROOT/etc/xdg/autostart" \
     "$OUTPUT_DIR"
 
-for source_file in \
-    voicetyping.py \
-    live_transcription.py \
-    auto_paste.py \
-    voice_overlay.py \
-    voice_visual.py \
-    voicetyping_toggle.py \
-    setup_shortcut.py \
-    desktop_environment.py \
-    desktop_integration.py \
-    shortcuts.py \
-    xdg_portal.py; do
-    install -m 0644 "$PROJECT_DIR/$source_file" "$APP_ROOT/app/$source_file"
-done
-
 "$PYTHON_BIN" -m pip install \
     --disable-pip-version-check \
     --no-cache-dir \
+    --require-hashes \
     --target "$APP_ROOT/vendor" \
     --requirement "$PROJECT_DIR/requirements.txt"
+"$PYTHON_BIN" -m pip install \
+    --disable-pip-version-check \
+    --no-cache-dir \
+    --no-deps \
+    --target "$APP_ROOT/vendor" \
+    "$WHEEL_PATH"
 
 find "$APP_ROOT/vendor" -type d -name __pycache__ -prune -exec rm -rf -- {} +
 
@@ -80,6 +133,9 @@ install -m 0644 "$PROJECT_DIR/packaging/io.github.fadayat.voicetyping.metainfo.x
 install -m 0644 "$PROJECT_DIR/README.md" "$PACKAGE_ROOT/usr/share/doc/voicetyping/README.md"
 install -m 0644 "$PROJECT_DIR/CHANGELOG.md" "$PACKAGE_ROOT/usr/share/doc/voicetyping/CHANGELOG.md"
 install -m 0644 "$PROJECT_DIR/LICENSE" "$PACKAGE_ROOT/usr/share/doc/voicetyping/copyright"
+if [[ -f "$PROJECT_DIR/PRIVACY.md" ]]; then
+    install -m 0644 "$PROJECT_DIR/PRIVACY.md" "$PACKAGE_ROOT/usr/share/doc/voicetyping/PRIVACY.md"
+fi
 
 INSTALLED_SIZE="$(du -sk "$PACKAGE_ROOT" | awk '{print $1}')"
 cat >"$PACKAGE_ROOT/DEBIAN/control" <<EOF

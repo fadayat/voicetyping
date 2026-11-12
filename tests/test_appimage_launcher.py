@@ -22,7 +22,6 @@ class AppImageLauncherTests(unittest.TestCase):
             encoding="utf-8",
         )
         python.chmod(0o755)
-        (self.appdir / "usr/src/voicetyping").mkdir(parents=True)
         self.capture_args = self.root / "arguments.txt"
         self.environment = os.environ.copy()
         self.environment.update(
@@ -46,7 +45,8 @@ class AppImageLauncherTests(unittest.TestCase):
         self.assertEqual(
             self.capture_args.read_text(encoding="utf-8").splitlines(),
             [
-                str(self.appdir / "usr/src/voicetyping/voicetyping.py"),
+                "-m",
+                "voicetyping.app",
                 "--version",
                 "value with spaces",
             ],

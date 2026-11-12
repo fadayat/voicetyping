@@ -8,7 +8,6 @@ temporary default is active, then restores the user's previous default.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -213,11 +212,6 @@ class SystemAudioRouter:
         )
         if device is None:
             raise AudioRoutingError("The active output device is unavailable")
-
-        if os.environ.get("APPDIR") and self._strict_headset(device):
-            raise AudioRoutingError(
-                "Headset routing requires the pending AppImage audio-backend update"
-            )
 
         candidates = [
             item

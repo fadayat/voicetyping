@@ -3,7 +3,6 @@ set -eu
 
 APPDIR=${APPDIR:?APPDIR is required}
 PYTHON="$APPDIR/usr/bin/python3"
-APPLICATION="$APPDIR/usr/src/voicetyping/voicetyping.py"
 
 if [ "$#" -eq 1 ] && [ "$1" = "--toggle" ]; then
     user_id=$(id -u)
@@ -35,7 +34,12 @@ if [ "$#" -eq 1 ] && [ "$1" = "--toggle" ]; then
         exit 1
     fi
     arguments=$(tr '\000' '\n' <"$proc_cmdline" 2>/dev/null) || exit 1
-    if ! printf '%s\n' "$arguments" | grep -Eq '(^|/)voicetyping\.py$'; then
+    first_argument=$(printf '%s\n' "$arguments" | sed -n '1p')
+    second_argument=$(printf '%s\n' "$arguments" | sed -n '2p')
+    third_argument=$(printf '%s\n' "$arguments" | sed -n '3p')
+    if [ "$first_argument" != "$PYTHON" ] || \
+        [ "$second_argument" != "-m" ] || \
+        [ "$third_argument" != "voicetyping.app" ]; then
         exit 1
     fi
 
@@ -48,4 +52,4 @@ if [ "$#" -eq 1 ] && [ "$1" = "--toggle" ]; then
     exit $?
 fi
 
-exec "$PYTHON" "$APPLICATION" "$@"
+exec "$PYTHON" -m voicetyping.app "$@"

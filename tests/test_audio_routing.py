@@ -148,7 +148,7 @@ class SystemAudioRouterTests(unittest.TestCase):
         with self.assertRaisesRegex(AudioRoutingError, "inspect PipeWire"):
             router.select()
 
-    def test_appimage_fails_closed_for_active_bluetooth_headset(self):
+    def test_appimage_selects_active_bluetooth_headset(self):
         fixture = RouterFixture(api="bluez5", name="Bluetooth Headset", inputs=[
             {
                 "id": 21,
@@ -163,8 +163,10 @@ class SystemAudioRouterTests(unittest.TestCase):
         ])
 
         with mock.patch.dict("os.environ", {"APPDIR": "/tmp/AppDir"}):
-            with self.assertRaisesRegex(AudioRoutingError, "AppImage"):
-                self.make_router(fixture).select()
+            selection = self.make_router(fixture).select()
+
+        self.assertEqual(selection.source_id, 21)
+        self.assertEqual(selection.source_description, "Headset Microphone")
 
     def test_hdmi_output_without_input_uses_system_default(self):
         fixture = RouterFixture(api="alsa", name="HDMI Monitor")
