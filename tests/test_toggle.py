@@ -43,7 +43,7 @@ class ToggleHelperTests(unittest.TestCase):
         ), mock.patch.object(toggle.os, "kill") as kill, mock.patch.object(
             toggle.subprocess, "run"
         ) as run:
-            self.assertEqual(toggle.main(), 0)
+            self.assertEqual(toggle.main([]), 0)
         kill.assert_called_once_with(123, signal.SIGUSR1)
         run.assert_not_called()
 
@@ -53,7 +53,7 @@ class ToggleHelperTests(unittest.TestCase):
         ), mock.patch.object(toggle.os, "kill") as kill, mock.patch.object(
             toggle.subprocess, "run"
         ) as run:
-            self.assertEqual(toggle.main(), 0)
+            self.assertEqual(toggle.main([]), 0)
         run.assert_called_once_with(
             ["systemctl", "--user", "start", toggle.AUTOSTART_UNIT],
             check=True,
@@ -69,9 +69,18 @@ class ToggleHelperTests(unittest.TestCase):
         ), mock.patch.object(toggle, "START_WAIT_SECONDS", 0), mock.patch.object(
             toggle.os, "kill"
         ) as kill, mock.patch.object(toggle.subprocess, "run") as run:
-            self.assertEqual(toggle.main(), 1)
+            self.assertEqual(toggle.main([]), 1)
         run.assert_called_once()
         kill.assert_not_called()
+
+    def test_help_and_invalid_arguments_never_signal_or_start(self):
+        for arguments, expected in ((["--help"], 0), (["unexpected"], 2)):
+            with self.subTest(arguments=arguments), mock.patch.object(
+                toggle.os, "kill"
+            ) as kill, mock.patch.object(toggle.subprocess, "run") as run:
+                self.assertEqual(toggle.main(arguments), expected)
+            kill.assert_not_called()
+            run.assert_not_called()
 
 
 if __name__ == "__main__":

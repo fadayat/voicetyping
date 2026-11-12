@@ -4,6 +4,7 @@
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -73,7 +74,15 @@ def start_and_wait_for_pid():
         time.sleep(POLL_INTERVAL_SECONDS)
 
 
-def main():
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ["--help"]:
+        print("usage: voicetyping-toggle")
+        return 0
+    if argv:
+        print("usage: voicetyping-toggle", file=sys.stderr)
+        return 2
+
     pid = valid_pid()
     if not pid:
         pid = start_and_wait_for_pid()

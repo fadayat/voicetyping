@@ -189,6 +189,9 @@ def wheel_checks(args: argparse.Namespace) -> None:
         toggle_command = venv / "bin/voicetyping-toggle"
         if not toggle_command.is_file() or not os.access(toggle_command, os.X_OK):
             raise RuntimeError("Wheel install did not create the voicetyping-toggle command.")
+        toggle_help = run_capture([str(toggle_command), "--help"], env=environment)
+        if toggle_help.strip() != "usage: voicetyping-toggle":
+            raise RuntimeError("voicetyping-toggle did not return safe help output.")
         qualified_modules = tuple(f"voicetyping.{module}" for module in PACKAGE_MODULES)
         discovery_code = (
             "import importlib.util, sys; "
