@@ -1,160 +1,34 @@
-name: Build Linux packages
+name: Source and wheel checks
 
 on:
   push:
-    branches:
-      - main
-      - codex/cross-distro-foundation
+    branches: [main]
   pull_request:
-    branches:
-      - main
-      - codex/cross-distro-foundation
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Package version
-        required: true
-        default: 2.2.0
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    if: github.event_name != 'workflow_dispatch'
+  source-and-wheel:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
       - uses: astral-sh/setup-uv@v6
       - name: Install desktop libraries
         run: |
           sudo apt-get update
           sudo apt-get install --yes libportaudio2 python3-cairo python3-gi \
-            python3-gi-cairo python3-tk gir1.2-gtk-3.0
-      - name: Install locked Python dependencies
+            python3-gi-cairo python3-tk gir1.2-gtk-3.0 build-essential \
+            python3-dev linux-libc-dev
+      - name: Install locked development dependencies
         run: |
           uv venv --system-site-packages
           uv sync --locked
-      - name: Validate lockfile
-        run: uv lock --check
-      - name: Check changed lines for whitespace errors
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
-          PUSH_BEFORE: ${{ github.event.before }}
-        run: |
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            git diff --check "origin/$BASE_REF...HEAD"
-          elif [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
-            git diff --check origin/main...HEAD
-          else
-            git diff --check "$PUSH_BEFORE" HEAD
-          fi
-      - name: Compile Python files
-        run: uv run --locked python -m compileall -q *.py tests
-      - name: Check shell syntax
-        run: |
-          bash -n install.sh
-          bash -n packaging/appimage/build-appimage.sh
-          dash -n packaging/appimage/voicetyping-launcher
-          bash -n packaging/deb/build-deb.sh
-      - name: Run unit tests
-        run: uv run --locked python -m unittest discover -s tests
-
-  deb:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes build-essential python3-dev python3-pip
-      - name: Build Debian package
-        run: ./packaging/deb/build-deb.sh "${{ inputs.version }}"
-      - name: Validate Debian package
-        run: |
-          dpkg-deb --info dist/*.deb
-          dpkg-deb --contents dist/*.deb
-          sudo apt-get install --yes ./dist/*.deb
-          test "$(voicetyping --version)" = "VoiceTyping ${{ inputs.version }}"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: voicetyping-deb-${{ inputs.version }}
-          path: |
-            dist/*.deb
-            dist/*.deb.sha256
-          if-no-files-found: error
-
-  appimage:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes build-essential python3-dev python3-pip binutils file \
-            gtk-update-icon-cache libglib2.0-bin
-          curl --fail --location --retry 3 \
-            --output /tmp/pip-26.3-py3-none-any.whl \
-            https://files.pythonhosted.org/packages/07/25/ee8c38ae72d66b844ce8eb9711ba905dba21ca1a8a0c960057c41cd23337/pip-26.3-py3-none-any.whl
-          echo "f3b60b20ffaadd4415ed7957212a38ac63fa4c5fa375bd0f4a797777940fad13  /tmp/pip-26.3-py3-none-any.whl" | sha256sum --check
-          sudo python3 -m pip install --no-index --no-deps --upgrade /tmp/pip-26.3-py3-none-any.whl
-          python3 -m pip --version | grep -F 'pip 26.3 '
-          curl --fail --location --retry 3 \
-            --output /tmp/appimage-builder.AppImage \
-            https://github.com/AppImageCrafters/appimage-builder/releases/download/v1.1.0/appimage-builder-1.1.0-x86_64.AppImage
-          echo "4b4f99cae9291d78ba12dbdabca7c0a67c72aa61eb2e5d424089171a9485e96f  /tmp/appimage-builder.AppImage" | sha256sum --check
-          chmod +x /tmp/appimage-builder.AppImage
-          curl --fail --location --retry 3 \
-            --output /tmp/appimagetool-x86_64.AppImage \
-            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
-          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  /tmp/appimagetool-x86_64.AppImage" | sha256sum --check
-          chmod +x /tmp/appimagetool-x86_64.AppImage
-          curl --fail --location --retry 3 \
-            --output /tmp/runtime-x86_64 \
-            https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
-          echo "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  /tmp/runtime-x86_64" | sha256sum --check
-          chmod +x /tmp/runtime-x86_64
-          curl --fail --location --retry 3 \
-            --output /tmp/AppRun-Release-x86_64 \
-            https://github.com/AppImageCrafters/AppRun/releases/download/v2.0.0/AppRun-Release-x86_64
-          echo "c74e7e3a085c624260f0d144c02968d00fa9383f5d7fc46b32f1dc80d371d7ff  /tmp/AppRun-Release-x86_64" | sha256sum --check
-          chmod +x /tmp/AppRun-Release-x86_64
-          curl --fail --location --retry 3 \
-            --output /tmp/libapprun_hooks-Release-x86_64.so \
-            https://github.com/AppImageCrafters/AppRun/releases/download/v2.0.0/libapprun_hooks-Release-x86_64.so
-          echo "1f64dd2161be3242f106c891b2daf27bbdd2103c20b28f57f61a56cdccb1eb6a  /tmp/libapprun_hooks-Release-x86_64.so" | sha256sum --check
-      - name: Build AppImage
-        env:
-          APPIMAGE_BUILDER: /tmp/appimage-builder.AppImage
-          APPIMAGE_BUILDER_APPRUN: /tmp/AppRun-Release-x86_64
-          APPIMAGE_BUILDER_HOOKS: /tmp/libapprun_hooks-Release-x86_64.so
-          APPIMAGETOOL: /tmp/appimagetool-x86_64.AppImage
-          APPIMAGE_RUNTIME: /tmp/runtime-x86_64
-        run: ./packaging/appimage/build-appimage.sh "${{ inputs.version }}"
-      - name: Validate AppImage
-        run: |
-          image="./dist/VoiceTyping-${{ inputs.version }}-x86_64.AppImage"
-          test "$("$image" --version)" = "VoiceTyping ${{ inputs.version }}"
-          test "$(APPIMAGE_EXTRACT_AND_RUN=1 "$image" --version)" = "VoiceTyping ${{ inputs.version }}"
-          if readelf -d "$image" 2>/dev/null | grep -q '(NEEDED)'; then
-            echo "AppImage runtime must not have dynamic library dependencies." >&2
-            exit 1
-          fi
-          if readelf -l "$image" 2>/dev/null | grep -q 'Requesting program interpreter'; then
-            echo "AppImage runtime must not require a host ELF interpreter." >&2
-            exit 1
-          fi
-      - uses: actions/upload-artifact@v7
-        with:
-          name: voicetyping-appimage-${{ inputs.version }}
-          path: |
-            dist/*.AppImage
-            dist/*.AppImage.sha256
-            dist/*.AppImage.zsync
-          if-no-files-found: error
+      - name: Validate source and tests
+        run: uv run --locked python scripts/release_harness.py source
+      - name: Build one wheel
+        run: uv build --wheel --out-dir dist
+      - name: Validate installed wheel
+        run: uv run --locked python scripts/release_harness.py wheel --wheel dist/voicetyping-*.whl

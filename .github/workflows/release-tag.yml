@@ -1,0 +1,37 @@
+name: Prepare tagged draft release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: version
+        name: Match tag to package version
+        run: |
+          VERSION="$(python3 -c 'from scripts.release_harness import read_package_version; print(read_package_version())')"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_NAME" != "v$VERSION" || "$TAG_VERSION" != "$VERSION" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match package version $VERSION." >&2
+            exit 1
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build-draft:
+    needs: validate-tag
+    uses: ./.github/workflows/release-artifacts.yml
+    with:
+      expected_version: ${{ needs.validate-tag.outputs.version }}
+      publish_draft: true
+    permissions:
+      contents: write
