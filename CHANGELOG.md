@@ -19,6 +19,10 @@
   instead of interpreting their timestamp as an invalid WAV sample rate.
 - Developer environments use the distribution Python so GTK, Cairo, and
   GObject modules installed by the system package manager remain available.
+- Rapid shortcut and tray presses are serialized through one bounded toggle
+  controller, while X11 auto-repeat is ignored until the key is released.
+- Microphone preparation now has immediate visual feedback, and repeated input
+  during transcription no longer churns or strands the overlay state.
 
 ### Privacy
 

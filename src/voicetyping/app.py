@@ -95,6 +95,7 @@ FALLBACK_MODELS = (
     "gemini-flash-latest",
 )
 TOGGLE_DEBOUNCE_SECONDS = 0.3
+TOGGLE_SHUTDOWN_JOIN_SECONDS = 1.0
 LIVE_FINALIZE_TIMEOUT_SECONDS = 3.0
 LIVE_FAILURE_COOLDOWN_SECONDS = 60.0
 
@@ -569,6 +570,8 @@ class NotificationPanel:
             "çatdı", "hədd", "sorğu limiti",
         )):
             return "warning"
+        if "preparing" in low or "hazırlanır" in low:
+            return "starting"
         if "recording" in low or "qeyd" in low or "yazılır" in low:
             return "recording"
         if "transcrib" in low or "çevril" in low or "gözləyin" in low or "wait for" in low:
@@ -605,7 +608,7 @@ class NotificationPanel:
         state = self._determine_state(text)
         now = time.monotonic()
         effective_hide_ms = hide_after
-        if state in ("recording", "transcribing"):
+        if state in ("starting", "recording", "transcribing"):
             effective_hide_ms = 0
         elif state == "copied":
             effective_hide_ms = 300
@@ -615,7 +618,7 @@ class NotificationPanel:
             if (
                 state == "ready"
                 and self._desired_show is not None
-                and self._desired_show[0] in ("recording", "transcribing")
+                and self._desired_show[0] in ("starting", "recording", "transcribing")
             ):
                 return
             self._desired_show = (state, hide_after)
@@ -880,7 +883,12 @@ class VoiceTypingApp:
         self._recovered_texts: list[str] = []
         self.listener = None
         self._last_toggle = 0.0
+        self._last_toggle_request = 0.0
         self._lock = threading.RLock()
+        self._toggle_condition = threading.Condition(self._lock)
+        self._toggle_pending_action: str | None = None
+        self._toggle_active_action: str | None = None
+        self._toggle_thread: threading.Thread | None = None
         self._shutdown = threading.Event()
         self._live_factory = live_factory
         self._paste_action = paste_action
@@ -954,14 +962,115 @@ class VoiceTypingApp:
             if now - self._last_toggle < TOGGLE_DEBOUNCE_SECONDS:
                 return False
             self._last_toggle = now
+        return self._toggle_once()
+
+    def request_toggle(self) -> bool:
+        """Queue a non-blocking toggle from a shortcut, signal, or tray action."""
+        now = time.monotonic()
+        with self._toggle_condition:
+            if self._shutdown.is_set():
+                return False
+            if now - self._last_toggle_request < TOGGLE_DEBOUNCE_SECONDS:
+                return False
+            if self.state in ("processing", "shutting_down"):
+                return False
+
+            # Capture the requested transition now instead of reevaluating it
+            # after a slow start.  A stop queued while startup is active must
+            # not become a new start if device setup later fails back to idle.
+            if self._toggle_active_action == "start" or self.state in (
+                "starting",
+                "recording",
+            ):
+                action = "stop"
+            elif self._toggle_active_action == "stop":
+                return False
+            elif self.state == "idle":
+                action = "start"
+            else:
+                return False
+
+            self._last_toggle_request = now
+            # Same-action parity bounds the queue: two pending presses cancel
+            # instead of creating a delayed start/stop storm.
+            if self._toggle_pending_action == action:
+                self._toggle_pending_action = None
+            else:
+                self._toggle_pending_action = action
+            thread = self._toggle_thread
+            # The controller is lifetime-scoped.  Checking only for None also
+            # closes the re-entrant signal window between assignment and
+            # Thread.start(), when is_alive() is still false.
+            if thread is None:
+                thread = threading.Thread(
+                    target=self._toggle_loop,
+                    daemon=True,
+                    name="toggle-controller",
+                )
+                self._toggle_thread = thread
+                thread.start()
+            self._toggle_condition.notify()
+        return True
+
+    def _toggle_loop(self) -> None:
+        while not self._shutdown.is_set():
+            with self._toggle_condition:
+                self._toggle_condition.wait_for(
+                    lambda: self._toggle_pending_action is not None
+                    or self._shutdown.is_set()
+                )
+                if self._shutdown.is_set():
+                    return
+                action = self._toggle_pending_action
+                self._toggle_pending_action = None
+                self._toggle_active_action = action
+            try:
+                self._run_toggle_action(action)
+            except Exception as error:
+                print(f"Toggle failed ({type(error).__name__}).")
+            finally:
+                with self._toggle_condition:
+                    self._toggle_active_action = None
+                    self._toggle_condition.notify_all()
+
+    def _run_toggle_action(self, action: str) -> bool:
+        with self._lock:
+            state = self.state
+        if action == "start" and state == "idle":
+            return self.start_recording()
+        if action == "stop" and state == "recording":
+            return self.request_stop()
+        return False
+
+    def _toggle_once(self) -> bool:
+        with self._lock:
             state = self.state
         if state == "idle":
             return self.start_recording()
         if state == "recording":
             return self.request_stop()
-        if state == "processing":
-            self.panel.show("Mətnə çevrilir — zəhmət olmasa gözləyin", color="#f9e2af", bg_color="#2d2a20", hide_after=1500)
         return False
+
+    def _claim_active_route(self, route) -> bool:
+        """Publish a provisional route before PipeWire is mutated."""
+        with self._lock:
+            if (
+                self._shutdown.is_set()
+                or self.state != "starting"
+                or self._active_route is not None
+            ):
+                return False
+            self._active_route = route
+            return True
+
+    def _restore_active_route(self, route=None) -> bool:
+        with self._lock:
+            owned_route = self._active_route
+            if owned_route is None or (route is not None and owned_route is not route):
+                return False
+            self._active_route = None
+        owned_route.restore()
+        return True
 
     def start_recording(self) -> bool:
         with self._lock:
@@ -970,6 +1079,11 @@ class VoiceTypingApp:
             self.state = "starting"
             self.recordings = []
             recovery_client = self._recovery_client
+        self.panel.show(
+            "Mikrofon hazırlanır…",
+            color="#89b4fa",
+            bg_color="#202838",
+        )
         self._recovery_pause.set()
         if recovery_client is not None:
             threading.Thread(target=self._close_recovery_client, args=(recovery_client,),
@@ -995,7 +1109,18 @@ class VoiceTypingApp:
         spool = None
         try:
             if self._audio_router is not None:
-                active_route = self._audio_router.activate()
+                if isinstance(self._audio_router, SystemAudioRouter):
+                    active_route = self._audio_router.activate(
+                        on_route=self._claim_active_route
+                    )
+                else:
+                    active_route = self._audio_router.activate()
+                    if not self._claim_active_route(active_route):
+                        active_route.restore()
+                        if live_session is not None:
+                            live_session.cancel()
+                        self._resume_recovery()
+                        return False
                 selection = active_route.selection
                 print(
                     f"Microphone selected: {selection.source_description}; "
@@ -1003,12 +1128,12 @@ class VoiceTypingApp:
                 )
             sample_rate = _valid_sample_rate(self._sample_rate_selector())
         except Exception as error:
-            if active_route is not None:
-                active_route.restore()
+            self._restore_active_route(active_route)
             if live_session is not None:
                 live_session.cancel()
             with self._lock:
-                if not self._shutdown.is_set():
+                notify_failure = not self._shutdown.is_set()
+                if notify_failure:
                     self.state = "idle"
             if spool is not None:
                 spool.discard()
@@ -1019,7 +1144,8 @@ class VoiceTypingApp:
             else:
                 print(f"Could not select microphone sample rate ({type(error).__name__}).")
                 message = "Mikrofon əlçatan deyil"
-            self.panel.show(message, color="#f38ba8", bg_color="#302020", hide_after=3000)
+            if notify_failure:
+                self.panel.show(message, color="#f38ba8", bg_color="#302020", hide_after=3000)
             return False
         try:
             spool = self.recovery_store.start_spool(sample_rate)
@@ -1027,25 +1153,26 @@ class VoiceTypingApp:
             spool = None
             print(f"Recording spool unavailable ({type(error).__name__}).")
         with self._lock:
-            if self._shutdown.is_set():
-                if active_route is not None:
-                    active_route.restore()
-                if live_session is not None:
-                    live_session.cancel()
-                if spool is not None:
-                    spool.discard()
-                self._resume_recovery()
-                return False
-            capture = _CaptureContext(
-                live_session,
-                max_frames=int(self.max_recording_seconds * sample_rate),
-                sample_rate=sample_rate,
-                live_skip_reason=live_skip_reason,
-                spool=spool,
-            )
-            self._capture_context = capture
-            self.recordings = capture.chunks
-            self._live_session = live_session
+            abort_start = self._shutdown.is_set()
+            if not abort_start:
+                capture = _CaptureContext(
+                    live_session,
+                    max_frames=int(self.max_recording_seconds * sample_rate),
+                    sample_rate=sample_rate,
+                    live_skip_reason=live_skip_reason,
+                    spool=spool,
+                )
+                self._capture_context = capture
+                self.recordings = capture.chunks
+                self._live_session = live_session
+        if abort_start:
+            if live_session is not None:
+                live_session.cancel()
+            if spool is not None:
+                spool.discard()
+            self._resume_recovery()
+            self._restore_active_route(active_route)
+            return False
         new_stream = None
         try:
             new_stream = self.stream_factory(
@@ -1066,15 +1193,16 @@ class VoiceTypingApp:
                     self._capture_context = None
                 self.recordings = []
                 self._live_session = None
-                if not self._shutdown.is_set():
+                notify_failure = not self._shutdown.is_set()
+                if notify_failure:
                     self.state = "idle"
-            if active_route is not None:
-                active_route.restore()
+            self._restore_active_route(active_route)
             if spool is not None:
                 spool.discard()
             self._resume_recovery()
             print(f"Could not open microphone ({type(error).__name__}).")
-            self.panel.show("Mikrofon əlçatan deyil", color="#f38ba8", bg_color="#302020", hide_after=3000)
+            if notify_failure:
+                self.panel.show("Mikrofon əlçatan deyil", color="#f38ba8", bg_color="#302020", hide_after=3000)
             return False
         with self._lock:
             if self._shutdown.is_set():
@@ -1082,7 +1210,6 @@ class VoiceTypingApp:
                 close_immediately = True
             else:
                 self.stream = new_stream
-                self._active_route = active_route
                 self.state = "recording"
                 close_immediately = False
                 self.duration_timer = threading.Timer(self.max_recording_seconds, self._duration_limit_reached)
@@ -1090,8 +1217,7 @@ class VoiceTypingApp:
                 self.duration_timer.start()
         if close_immediately:
             self._close_stream(new_stream)
-            if active_route is not None:
-                active_route.restore()
+            self._restore_active_route(active_route)
             if spool is not None:
                 try:
                     spool.preserve(self.recovery_store, sample_rate)
@@ -1704,6 +1830,10 @@ class VoiceTypingApp:
             paste_action = self._paste_action
             self._paste_action = None
             worker = self.worker
+            toggle_thread = self._toggle_thread
+        with self._toggle_condition:
+            self._toggle_pending_action = None
+            self._toggle_condition.notify_all()
         if timer:
             timer.cancel()
         self._close_stream(stream)
@@ -1750,6 +1880,14 @@ class VoiceTypingApp:
         if self._recovery_thread is not None and self._recovery_thread.is_alive():
             self._recovery_event.set()
             self._recovery_thread.join(timeout=0.5)
+        if (
+            toggle_thread is not None
+            and toggle_thread is not threading.current_thread()
+            and toggle_thread.is_alive()
+        ):
+            # The route is already restored above.  Give startup a short
+            # cleanup window without letting a stuck device backend block Quit.
+            toggle_thread.join(timeout=TOGGLE_SHUTDOWN_JOIN_SECONDS)
         self.panel.close()
 
 
@@ -1776,7 +1914,7 @@ def run_tray(app: VoiceTypingApp) -> None:
         icon.stop()
 
     menu = (
-        item("Start/stop recording", lambda icon, menu_item: app.toggle()),
+        item("Start/stop recording", lambda icon, menu_item: app.request_toggle()),
         item("Copy last transcription", lambda icon, menu_item: app.copy_last_transcription()),
         item("Copy recovered transcriptions", lambda icon, menu_item: app.copy_last_recovered_transcription()),
         item("Retry saved recordings", lambda icon, menu_item: app.retry_saved_recordings(notify=True)),
@@ -1794,7 +1932,9 @@ def _start_wayland_portal_bootstrap(app, environment, shortcut, *, auto_paste: b
             from .desktop_integration import build_wayland_shortcut_listener
 
             if not app._shutdown.is_set():
-                listener = build_wayland_shortcut_listener(shortcut, app.toggle, environment)
+                listener = build_wayland_shortcut_listener(
+                    shortcut, app.request_toggle, environment
+                )
                 if listener is not None:
                     if listener.start():
                         if app.install_listener_if_running(listener):
@@ -1950,11 +2090,11 @@ def main(argv: list[str] | None = None) -> int:
             start_recovery(lambda: create_client(api_key))
 
         def signal_handler(sig, frame) -> None:
-            threading.Thread(target=app.toggle, daemon=True, name="toggle-signal").start()
+            app.request_toggle()
 
         signal.signal(signal.SIGUSR1, signal_handler)
         if pending_toggles % 2:
-            threading.Thread(target=app.toggle, daemon=True, name="startup-toggle").start()
+            app.request_toggle()
 
         from .desktop_integration import should_start_x11_listener
 
@@ -1965,28 +2105,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Global keyboard listener unavailable ({type(error).__name__}).")
                 pynput_keyboard = None
 
-            pressed_modifier_keys = {}
-            from .shortcuts import parse_shortcut, pynput_key_name, pynput_modifier
+            from .shortcuts import PynputShortcutState, parse_shortcut
 
             shortcut_spec = parse_shortcut(shortcut)
+            shortcut_state = PynputShortcutState()
 
             def on_press(key) -> None:
-                modifier = pynput_modifier(key)
-                if modifier is not None:
-                    key_id = str(getattr(key, "name", key)).casefold()
-                    pressed_modifier_keys[key_id] = modifier
+                press = shortcut_state.press(key)
+                if press is None:
                     return
-                key_name = pynput_key_name(key)
-                if key_name is not None and shortcut_spec.matches(
-                    key_name, set(pressed_modifier_keys.values())
-                ):
-                    app.toggle()
+                key_name, pressed_modifiers = press
+                if shortcut_spec.matches(key_name, pressed_modifiers):
+                    app.request_toggle()
 
             def on_release(key) -> None:
-                modifier = pynput_modifier(key)
-                if modifier is not None:
-                    key_id = str(getattr(key, "name", key)).casefold()
-                    pressed_modifier_keys.pop(key_id, None)
+                shortcut_state.release(key)
 
             if pynput_keyboard is not None:
                 try:

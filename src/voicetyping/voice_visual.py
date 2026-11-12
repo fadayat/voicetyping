@@ -25,7 +25,7 @@ def _state_name(value: str | None) -> str:
         return "warning"
     if value in ("recording", "listening", "capturing"):
         return "recording"
-    if value in ("transcribing", "processing", "converting"):
+    if value in ("starting", "preparing", "transcribing", "processing", "converting"):
         return "transcribing"
     return "idle"
 

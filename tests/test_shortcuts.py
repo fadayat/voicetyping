@@ -1,7 +1,12 @@
 import unittest
 from types import SimpleNamespace
 
-from voicetyping.shortcuts import parse_shortcut, pynput_key_name, pynput_modifier
+from voicetyping.shortcuts import (
+    PynputShortcutState,
+    parse_shortcut,
+    pynput_key_name,
+    pynput_modifier,
+)
 
 
 class ShortcutParsingTests(unittest.TestCase):
@@ -31,6 +36,47 @@ class ShortcutParsingTests(unittest.TestCase):
         self.assertEqual(pynput_modifier(SimpleNamespace(name="alt_r")), "ALT")
         self.assertEqual(pynput_key_name(SimpleNamespace(name="f8")), "f8")
         self.assertEqual(pynput_key_name(SimpleNamespace(char=" ")), "space")
+
+    def test_pynput_state_emits_one_edge_until_key_release(self):
+        now = [1.0]
+        state = PynputShortcutState(monotonic=lambda: now[0])
+        f8 = SimpleNamespace(name="f8")
+
+        self.assertEqual(state.press(f8), ("f8", set()))
+        self.assertIsNone(state.press(f8))
+        state.release(f8)
+        now[0] += 0.1
+        self.assertEqual(state.press(f8), ("f8", set()))
+
+    def test_pynput_state_ignores_x11_repeat_release_press_pairs(self):
+        now = [1.0]
+        state = PynputShortcutState(monotonic=lambda: now[0])
+        f8 = SimpleNamespace(name="f8")
+
+        self.assertEqual(state.press(f8), ("f8", set()))
+        for _ in range(10):
+            now[0] += 0.04
+            state.release(f8)
+            now[0] += 0.001
+            self.assertIsNone(state.press(f8))
+
+        state.release(f8)
+        now[0] += 0.1
+        self.assertEqual(state.press(f8), ("f8", set()))
+
+    def test_pynput_state_tracks_modifier_sides_without_repeat(self):
+        now = [1.0]
+        state = PynputShortcutState(monotonic=lambda: now[0])
+        control = SimpleNamespace(name="ctrl_l")
+        f8 = SimpleNamespace(name="f8")
+
+        self.assertIsNone(state.press(control))
+        self.assertEqual(state.press(f8), ("f8", {"CTRL"}))
+        self.assertIsNone(state.press(f8))
+        state.release(f8)
+        state.release(control)
+        now[0] += 0.1
+        self.assertEqual(state.press(f8), ("f8", set()))
 
     def test_rejects_incomplete_or_unknown_shortcuts(self):
         for value in ("", "Ctrl+", "<Ctrl>", "Ctrl+Bogus+F8", "Ctrl+Ctrl+F8"):

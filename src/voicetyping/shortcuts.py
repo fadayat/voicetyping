@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
+from typing import Callable
 
 
 MODIFIER_ORDER = ("CTRL", "ALT", "SHIFT", "SUPER")
@@ -29,6 +31,7 @@ _MODIFIER_KEY_ALIASES = {
     "super": "SUPER", "super_l": "SUPER", "super_r": "SUPER",
     "meta_l": "SUPER", "meta_r": "SUPER", "cmd": "SUPER",
 }
+X11_REPEAT_RELEASE_GRACE_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -109,3 +112,67 @@ def pynput_key_name(key) -> str | None:
     if isinstance(char, str) and char:
         return _KEY_ALIASES.get(char.casefold(), char)
     return None
+
+
+class PynputShortcutState:
+    """Convert pynput events into fresh key-down edges.
+
+    X11 can emit repeated press events while a key remains held. Tracking the
+    non-modifier key until release prevents one physical F8 press from toggling
+    recording several times.
+    """
+
+    def __init__(
+        self,
+        monotonic: Callable[[], float] = time.monotonic,
+        repeat_release_grace: float = X11_REPEAT_RELEASE_GRACE_SECONDS,
+    ) -> None:
+        self._modifiers: dict[str, str] = {}
+        self._pressed_keys: set[str] = set()
+        self._released_at: dict[str, float] = {}
+        self._monotonic = monotonic
+        self._repeat_release_grace = repeat_release_grace
+
+    def press(self, key) -> tuple[str, set[str]] | None:
+        now = self._monotonic()
+        stale_releases = [
+            key_id
+            for key_id, released_at in self._released_at.items()
+            if now - released_at > self._repeat_release_grace
+        ]
+        for key_id in stale_releases:
+            self._released_at.pop(key_id, None)
+            self._pressed_keys.discard(key_id)
+
+        modifier = pynput_modifier(key)
+        if modifier is not None:
+            key_id = str(getattr(key, "name", key)).casefold()
+            self._modifiers[key_id] = modifier
+            return None
+        key_name = pynput_key_name(key)
+        if key_name is None:
+            return None
+        key_id = key_name.casefold()
+        if key_id in self._pressed_keys:
+            released_at = self._released_at.pop(key_id, None)
+            if released_at is None:
+                return None
+            if now - released_at <= self._repeat_release_grace:
+                # X11 auto-repeat is often delivered as synthetic
+                # release/press pairs.  Keep the physical key down across the
+                # short pair so a long hold produces only one toggle.
+                return None
+        self._pressed_keys.add(key_id)
+        return key_name, set(self._modifiers.values())
+
+    def release(self, key) -> None:
+        modifier = pynput_modifier(key)
+        if modifier is not None:
+            key_id = str(getattr(key, "name", key)).casefold()
+            self._modifiers.pop(key_id, None)
+            return
+        key_name = pynput_key_name(key)
+        if key_name is not None:
+            key_id = key_name.casefold()
+            if key_id in self._pressed_keys:
+                self._released_at[key_id] = self._monotonic()

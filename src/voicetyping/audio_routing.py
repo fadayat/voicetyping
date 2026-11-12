@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -68,12 +69,38 @@ class ActiveInputRoute:
     ):
         self.selection = selection
         self._restore_action = restore_action
+        self._cancelled = threading.Event()
+        self._activation_lock = threading.Lock()
+        self._changed = False
+        self._restored = False
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def _activate(self, action: Callable[[], None]) -> bool:
+        """Apply the route unless restoration already won the race."""
+        with self._activation_lock:
+            if self._cancelled.is_set() or self._restored:
+                return False
+            # Assume the command may mutate before reporting failure.  A
+            # failed command therefore still restores the preserved source.
+            self._changed = True
+            action()
+            return True
 
     def restore(self) -> None:
-        action = self._restore_action
-        self._restore_action = None
-        if action is not None:
-            action()
+        self._cancelled.set()
+        with self._activation_lock:
+            if self._restored:
+                return
+            self._restored = True
+            action = self._restore_action if self._changed else None
+            self._restore_action = None
+            # Keep concurrent restore callers behind the lock until the
+            # previous default is actually back, not merely scheduled.
+            if action is not None:
+                action()
 
     def __enter__(self) -> "ActiveInputRoute":
         return self
@@ -263,9 +290,16 @@ class SystemAudioRouter:
     def _set_default(self, source_id: int) -> None:
         self._runner(["wpctl", "set-default", str(source_id)])
 
-    def _wait_for_default(self, source_id: int, source_name: str) -> bool:
+    def _wait_for_default(
+        self,
+        source_id: int,
+        source_name: str,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> bool:
         deadline = self._monotonic() + ROUTE_SETTLE_SECONDS
         while True:
+            if cancelled is not None and cancelled():
+                return False
             try:
                 current = self._inspect("@DEFAULT_AUDIO_SOURCE@")
             except (AudioRoutingError, OSError, subprocess.SubprocessError):
@@ -294,10 +328,17 @@ class SystemAudioRouter:
         except (OSError, subprocess.SubprocessError):
             return False
 
-    def activate(self) -> ActiveInputRoute:
+    def activate(
+        self,
+        on_route: Callable[[ActiveInputRoute], bool] | None = None,
+    ) -> ActiveInputRoute:
         selection = self.select()
         if selection.uses_system_default:
-            return ActiveInputRoute(selection)
+            route = ActiveInputRoute(selection)
+            if on_route is not None and not on_route(route):
+                route.restore()
+                raise AudioRoutingError("Microphone activation was cancelled")
+            return route
 
         try:
             previous = self._inspect("@DEFAULT_AUDIO_SOURCE@")
@@ -310,28 +351,42 @@ class SystemAudioRouter:
             previous.object_id == selection.source_id
             or previous.name == selection.source_name
         ):
-            return ActiveInputRoute(selection)
-
-        try:
-            self._set_default(selection.source_id)
-            if not self._wait_for_default(selection.source_id, selection.source_name):
-                raise AudioRoutingError(
-                    f"Could not activate microphone {selection.source_description}"
-                )
-        except (AudioRoutingError, OSError, subprocess.SubprocessError) as error:
-            if not self._restore_source(previous):
-                print("Could not restore the previous default microphone.")
-            if isinstance(error, AudioRoutingError):
-                raise
-            raise AudioRoutingError(
-                f"Could not activate microphone {selection.source_description}"
-            ) from error
+            route = ActiveInputRoute(selection)
+            if on_route is not None and not on_route(route):
+                route.restore()
+                raise AudioRoutingError("Microphone activation was cancelled")
+            return route
 
         def restore() -> None:
             if not self._restore_source(previous):
                 print("Could not restore the previous default microphone.")
 
-        return ActiveInputRoute(selection, restore)
+        route = ActiveInputRoute(selection, restore)
+        if on_route is not None and not on_route(route):
+            route.restore()
+            raise AudioRoutingError("Microphone activation was cancelled")
+
+        try:
+            if not route._activate(lambda: self._set_default(selection.source_id)):
+                raise AudioRoutingError("Microphone activation was cancelled")
+            if not self._wait_for_default(
+                selection.source_id,
+                selection.source_name,
+                cancelled=lambda: route.cancelled,
+            ):
+                if route.cancelled:
+                    raise AudioRoutingError("Microphone activation was cancelled")
+                raise AudioRoutingError(
+                    f"Could not activate microphone {selection.source_description}"
+                )
+        except (AudioRoutingError, OSError, subprocess.SubprocessError) as error:
+            route.restore()
+            if isinstance(error, AudioRoutingError):
+                raise
+            raise AudioRoutingError(
+                f"Could not activate microphone {selection.source_description}"
+            ) from error
+        return route
 
     def audio_info(self) -> list[str]:
         selection = self.select()

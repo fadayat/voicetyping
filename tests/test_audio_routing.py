@@ -1,9 +1,15 @@
 import json
 import subprocess
+import threading
 import unittest
 from unittest import mock
 
-from voicetyping.audio_routing import AudioRoutingError, SystemAudioRouter
+from voicetyping.audio_routing import (
+    ActiveInputRoute,
+    AudioRoutingError,
+    AudioSelection,
+    SystemAudioRouter,
+)
 
 
 def inspect_output(object_id, properties):
@@ -198,6 +204,60 @@ class SystemAudioRouterTests(unittest.TestCase):
 
         self.assertEqual(fixture.set_default_calls, [21, 20])
         self.assertEqual(fixture.default_source_id, 20)
+
+    def test_route_is_published_before_default_input_changes(self):
+        fixture = RouterFixture(inputs=[
+            {
+                "id": 21,
+                "props": {
+                    "device.id": "10",
+                    "media.class": "Audio/Source",
+                    "node.name": "usb_input.headset",
+                    "node.description": "USB Headset Microphone",
+                },
+            }
+        ])
+        published_defaults = []
+
+        route = self.make_router(fixture).activate(
+            on_route=lambda _route: published_defaults.append(
+                fixture.default_source_id
+            ) or True
+        )
+
+        self.assertEqual(published_defaults, [20])
+        self.assertEqual(fixture.default_source_id, 21)
+        route.restore()
+
+    def test_concurrent_restore_waits_for_single_restore_action(self):
+        selection = AudioSelection(21, "input", "Input", "Output", "test", "test")
+        restore_entered = threading.Event()
+        release_restore = threading.Event()
+        calls = []
+
+        def restore_action():
+            calls.append("restore")
+            restore_entered.set()
+            release_restore.wait(1)
+
+        route = ActiveInputRoute(selection, restore_action)
+        self.assertTrue(route._activate(lambda: None))
+        first = threading.Thread(target=route.restore)
+        second_finished = threading.Event()
+        second = threading.Thread(
+            target=lambda: (route.restore(), second_finished.set())
+        )
+
+        first.start()
+        self.assertTrue(restore_entered.wait(1))
+        second.start()
+        self.assertFalse(second_finished.wait(0.05))
+        release_restore.set()
+        first.join(1)
+        second.join(1)
+
+        self.assertEqual(calls, ["restore"])
+        self.assertTrue(second_finished.is_set())
 
     def test_missing_previous_default_aborts_before_mutating_routing(self):
         fixture = RouterFixture(inputs=[
