@@ -182,7 +182,9 @@ class LiveTranscriberTests(unittest.TestCase):
             ]
         )
         live, client = self.make_transcriber(
-            session, language_codes=("az-AZ",)
+            session,
+            language_codes=("az-AZ", "en-US"),
+            custom_vocabulary=("fallback", "GitHub"),
         )
         live.start()
         live.feed_audio(b"pcm")
@@ -190,7 +192,11 @@ class LiveTranscriberTests(unittest.TestCase):
         self.assertEqual(live.finish(1.0), "salam dunya")
         config = client.aio.live.calls[0]["config"]
         self.assertEqual(
-            config.input_audio_transcription.language_codes, ["az-AZ"]
+            config.input_audio_transcription.language_codes, ["az-AZ", "en-US"]
+        )
+        self.assertEqual(
+            config.input_audio_transcription.custom_vocabulary,
+            ["fallback", "GitHub"],
         )
 
     def test_interim_only_generation_complete_does_not_become_final_text(self):

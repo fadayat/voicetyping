@@ -356,6 +356,24 @@ class AnimationPanelTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_transcription_preferences_default_to_azerbaijani_english_and_terms(self):
+        language_codes, vocabulary = vt.transcription_preferences({})
+
+        self.assertEqual(language_codes, ("az-AZ", "en-US"))
+        self.assertIn("fallback", vocabulary)
+        self.assertIn("API", vocabulary)
+
+    def test_transcription_preferences_allow_auto_detection_and_custom_terms(self):
+        language_codes, vocabulary = vt.transcription_preferences(
+            {
+                "language_codes": [],
+                "custom_vocabulary": [" fallback ", "fallback", "Kubernetes"],
+            }
+        )
+
+        self.assertEqual(language_codes, ())
+        self.assertEqual(vocabulary, ("fallback", "Kubernetes"))
+
     def test_appimage_native_library_is_resolved_from_bundle(self):
         with tempfile.TemporaryDirectory() as directory:
             library = Path(directory) / "usr/lib/x86_64-linux-gnu/libportaudio.so.2"
@@ -843,6 +861,9 @@ class AppStateTests(unittest.TestCase):
 
         copy.assert_called_once_with("Salam dünya.")
         self.assertEqual(client.calls[0]["model"], vt.TRANSCRIPTION_MODEL)
+        transcription_config = client.calls[0]["config"].audio_transcription_config
+        self.assertEqual(transcription_config.language_codes, ["az-AZ", "en-US"])
+        self.assertIn("fallback", transcription_config.custom_vocabulary)
         self.assertEqual(app.last_text, "Salam dünya.")
         self.assertEqual(app.state, "idle")
 
@@ -875,6 +896,7 @@ class AppStateTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0]["model"], vt.TRANSCRIPTION_MODEL)
         self.assertEqual(calls[1]["model"], vt.FALLBACK_MODELS[0])
+        self.assertIn("code-switching", calls[1]["contents"][0])
         self.assertEqual(app.last_text, "Salam fallback.")
         self.assertEqual(app.state, "idle")
 

@@ -23,6 +23,8 @@
   controller, while X11 auto-repeat is ignored until the key is released.
 - Microphone preparation now has immediate visual feedback, and repeated input
   during transcription no longer churns or strands the overlay state.
+- Azerbaijani and English are hinted together, while Live and batch
+  transcription share configurable vocabulary for embedded technical terms.
 
 ### Privacy
 

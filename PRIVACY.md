@@ -18,5 +18,7 @@ successfully copied or the application exits.
 VoiceTyping does not log audio, transcript text, or API keys. The Gemini API
 key is stored as plain text in `~/.config/voicetyping/config.json` with
 owner-only permissions (`0600`). Anyone with access to the local account can
-read and use it. Keep the configuration, recovery folder, and any diagnostic
+read and use it. Language hints and configured custom-vocabulary terms are sent
+to Google with transcription requests. Do not place confidential text in the
+custom vocabulary. Keep the configuration, recovery folder, and any diagnostic
 files on the local device.

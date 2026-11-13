@@ -176,7 +176,8 @@ Add optional settings to the existing configuration JSON, then restart the app:
 | `"shortcut": "<Ctrl><Alt>F8"` | `"F8"` | Set the global shortcut. Accepts GNOME markup or plus-separated forms such as `Ctrl+Alt+F8`. |
 | `"auto_paste": false` | `true` | Keep the transcript on the clipboard without sending a paste shortcut. |
 | `"live_transcription": false` | `true` | Use the complete-recording batch path. |
-| `"language_codes": []` | Azerbaijani hint | Let Gemini detect the spoken language automatically. |
+| `"language_codes"` | `["az-AZ", "en-US"]` | Recognize Azerbaijani speech with embedded English words. Use `[]` for unrestricted automatic detection. |
+| `"custom_vocabulary"` | Small developer-term list | Bias recognition toward terms such as `fallback`, `API`, and `GitHub`. A configured list replaces the built-in list; use `[]` to disable it. |
 
 <details>
 <summary>Recording limits and failure behavior</summary>

@@ -17,7 +17,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import simpledialog
-from typing import Callable
+from typing import Callable, Sequence
 
 import numpy as np
 import pyperclip
@@ -98,6 +98,22 @@ TOGGLE_DEBOUNCE_SECONDS = 0.3
 TOGGLE_SHUTDOWN_JOIN_SECONDS = 1.0
 LIVE_FINALIZE_TIMEOUT_SECONDS = 3.0
 LIVE_FAILURE_COOLDOWN_SECONDS = 60.0
+DEFAULT_LANGUAGE_CODES = ("az-AZ", "en-US")
+DEFAULT_CUSTOM_VOCABULARY = (
+    "fallback",
+    "backend",
+    "frontend",
+    "API",
+    "GitHub",
+    "Docker",
+    "Python",
+    "Linux",
+    "AppImage",
+    "Fedora",
+    "Ubuntu",
+    "Gemini",
+)
+MAX_CUSTOM_VOCABULARY_TERMS = 1000
 
 CONFIG_DIR = Path.home() / ".config" / "voicetyping"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -297,13 +313,51 @@ def create_client(api_key: str):
     )
 
 
-def create_live_transcriber(api_key: str):
-    language_codes = load_config().get("language_codes", ["az-AZ"])
-    if not isinstance(language_codes, list) or not all(
-        isinstance(code, str) and code for code in language_codes
-    ):
-        language_codes = ["az-AZ"]
-    return LiveTranscriber(api_key, language_codes=language_codes)
+def _normalized_string_list(
+    value,
+    default: Sequence[str],
+    *,
+    limit: int | None = None,
+) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return tuple(default)
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            return tuple(default)
+        item = item.strip()
+        if item not in normalized:
+            normalized.append(item)
+    if limit is not None:
+        normalized = normalized[:limit]
+    return tuple(normalized)
+
+
+def transcription_preferences(config: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return validated language hints and vocabulary without reading user state."""
+    language_codes = _normalized_string_list(
+        config.get("language_codes", DEFAULT_LANGUAGE_CODES),
+        DEFAULT_LANGUAGE_CODES,
+    )
+    custom_vocabulary = _normalized_string_list(
+        config.get("custom_vocabulary", DEFAULT_CUSTOM_VOCABULARY),
+        DEFAULT_CUSTOM_VOCABULARY,
+        limit=MAX_CUSTOM_VOCABULARY_TERMS,
+    )
+    return language_codes, custom_vocabulary
+
+
+def create_live_transcriber(
+    api_key: str,
+    *,
+    language_codes: Sequence[str] = DEFAULT_LANGUAGE_CODES,
+    custom_vocabulary: Sequence[str] = DEFAULT_CUSTOM_VOCABULARY,
+):
+    return LiveTranscriber(
+        api_key,
+        language_codes=language_codes,
+        custom_vocabulary=custom_vocabulary,
+    )
 
 
 def _valid_sample_rate(value) -> float:
@@ -868,6 +922,8 @@ class VoiceTypingApp:
         sample_rate_selector: Callable[[], float] | None = None,
         audio_router=None,
         recovery_store: RecoveryStore | None = None,
+        language_codes: Sequence[str] = DEFAULT_LANGUAGE_CODES,
+        custom_vocabulary: Sequence[str] = DEFAULT_CUSTOM_VOCABULARY,
     ):
         self.client = client
         self.panel = panel
@@ -891,6 +947,8 @@ class VoiceTypingApp:
         self._toggle_thread: threading.Thread | None = None
         self._shutdown = threading.Event()
         self._live_factory = live_factory
+        self._language_codes = tuple(language_codes)
+        self._custom_vocabulary = tuple(custom_vocabulary)
         self._paste_action = paste_action
         self.shortcut_label = shortcut_label
         if sample_rate_selector is not None:
@@ -1303,7 +1361,10 @@ class VoiceTypingApp:
                         model=model_name,
                         contents=[audio_part],
                         config=types.GenerateContentConfig(
-                            audio_transcription_config=types.AudioTranscriptionConfig(language_codes=[]),
+                            audio_transcription_config=types.AudioTranscriptionConfig(
+                                language_codes=list(self._language_codes),
+                                custom_vocabulary=list(self._custom_vocabulary),
+                            ),
                             http_options=types.HttpOptions(timeout=timeout_ms),
                         ),
                     )
@@ -1312,6 +1373,7 @@ class VoiceTypingApp:
                         "Accurately transcribe the spoken audio verbatim. "
                         "Return ONLY the transcribed speech. Do not add commentary, "
                         "conversational replies, explanations, formatting, or quotation marks. "
+                        "Preserve code-switching and English technical terms exactly as spoken. "
                         "If no speech is heard, return nothing."
                     )
                     response = client.models.generate_content(
@@ -1750,7 +1812,11 @@ class VoiceTypingApp:
             old_client = self.client
             self.client = create_client(api_key)
             if self._live_factory is not None:
-                self._live_factory = lambda: create_live_transcriber(api_key)
+                self._live_factory = lambda: create_live_transcriber(
+                    api_key,
+                    language_codes=self._language_codes,
+                    custom_vocabulary=self._custom_vocabulary,
+                )
                 self._live_disabled_until = 0.0
             if self._recovery_client_factory is not None:
                 self._recovery_client_factory = lambda: create_client(api_key)
@@ -2049,6 +2115,7 @@ def main(argv: list[str] | None = None) -> int:
 
         panel = NotificationPanel()
         config = load_config()
+        language_codes, custom_vocabulary = transcription_preferences(config)
         portal_setup_pending = bool(
             config.get("auto_paste", True)
             and desktop_environment is not None
@@ -2062,7 +2129,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         live_factory = None
         if config.get("live_transcription", True):
-            live_factory = lambda: create_live_transcriber(api_key)
+            live_factory = lambda: create_live_transcriber(
+                api_key,
+                language_codes=language_codes,
+                custom_vocabulary=custom_vocabulary,
+            )
         paste_action = None
         try:
             from .desktop_integration import build_paste_action
@@ -2084,6 +2155,8 @@ def main(argv: list[str] | None = None) -> int:
             live_factory=live_factory,
             paste_action=paste_action,
             shortcut_label=shortcut_label,
+            language_codes=language_codes,
+            custom_vocabulary=custom_vocabulary,
         )
         start_recovery = getattr(app, "start_recovery_worker", None)
         if callable(start_recovery):
