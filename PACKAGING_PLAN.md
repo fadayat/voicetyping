@@ -13,8 +13,9 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 | 4. Make wheel the source for all installers | Complete | `uv.lock` and the hash-pinned export agree. `install.sh`, AppImage, and `.deb` now validate and install one supplied wheel; the isolated installer passed twice while preserving two rollback releases. | `3a6084f` | Validate the release harness and finish the privacy, README, and changelog documentation. |
 | 5. Add release harness and documentation | Complete | The isolated source and wheel harnesses pass, cover every packaged module and both entry points, and verify the installer twice without reading the user's app state. README, changelog, privacy, metainfo, and manual smoke steps describe v2.3 behavior. | `5b1b3a5` | Validate CI syntax and make PR, manual-artifact, and tag workflows consume the same tested wheel. |
 | 6. Add CI and draft-release automation | Complete | PR/main runs source and wheel gates. Manual runs build AppImage and `.deb` from the tested wheel without publishing. Matching `v*` tags run both artifact harnesses, create checksums and `.zsync`, then prepare a draft release only. | `f505c9d` | Run the final local gates and leave desktop artifact smoke tests pending until CI produces release candidates. |
-| 7. Release gates | Developer smoke in progress; package rerun pending | The source harness passes 206 tests. A real Fedora developer launch uses system GTK/Cairo, safely migrates legacy crash spools, and now has serialized rapid controls. Earlier wheel and Ubuntu `.deb` gates passed, but must be repeated after the latest runtime fixes. | `4d3aaab` | Restart the developer runtime and smoke-test normal, double, held, and processing-time F8 input; then rebuild and revalidate the wheel and `.deb` before any authorized push or AppImage CI run. |
+| 7. Release gates | Developer smoke in progress; package rerun pending | The source harness passes 208 tests. A real Fedora developer launch uses system GTK/Cairo, safely migrates legacy crash spools, and now has serialized rapid controls plus Azerbaijani/English term hints. Earlier wheel and Ubuntu `.deb` gates passed, but must be repeated after the latest runtime fixes. | `d551ea0` | Restart the developer runtime and smoke-test rapid controls plus mixed Azerbaijani/English transcription; then rebuild and revalidate the wheel and `.deb` before any authorized push or AppImage CI run. |
 | 8. Stabilize rapid controls | Automated checks complete; live X11 smoke pending | Shortcut, tray, signal, and portal requests use one bounded controller. X11 repeat pairs are filtered, startup feedback is immediate, and provisional audio routes are restored safely during shutdown. | `4d3aaab` | Run the fixed developer source and verify that rapid or held F8 input cannot strand the tray icon or overlay. |
+| 9. Preserve mixed-language terms | Automated checks complete; live speech smoke pending | Azerbaijani and English hints plus configurable technical vocabulary now reach both Live and batch transcription. Generic fallback prompts preserve code-switching. | `d551ea0` | Run the developer source and verify embedded terms such as `fallback`, `API`, and `GitHub` in Azerbaijani sentences. |
 
 ## Decisions
 
@@ -53,7 +54,7 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 ## Phase 7 local checkpoint
 
 - `scripts/release_harness.py source` passes lock/export checks, compilation,
-  and all 206 offline tests.
+  and all 208 offline tests.
 - The Fedora developer runtime starts with the distribution Python, GTK/Cairo
   modules, tray process, overlay process, and private legacy-spool migration.
 - The previous `2.3.0` wheel and `.deb` checkpoint passed clean-environment
@@ -89,3 +90,21 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 
 Next step: launch the fixed developer source for the manual rapid-control smoke
 test. No push, tag, AppImage CI run, or release action is authorized yet.
+
+## Mixed-language checkpoint
+
+- [x] Default transcription hints include both `az-AZ` and `en-US` while an
+  explicit empty language list still enables unrestricted auto-detection.
+- [x] A small built-in developer vocabulary includes `fallback`, `API`, and
+  other common technical terms; users can replace or disable it in config.
+- [x] Live, primary batch, recovery retry, and generic batch fallback paths use
+  the same language intent and preserve code-switching.
+- [x] README, changelog, and privacy documentation describe vocabulary behavior
+  and disclosure to Google.
+- [x] Pass 94 focused transcription tests and all 208 offline source tests.
+- [ ] Restart the Fedora developer runtime with commit `d551ea0` and manually
+  verify Azerbaijani sentences containing `fallback`, `API`, and `GitHub`.
+- [ ] Rebuild and rerun wheel and Ubuntu `.deb` gates after the live smoke test.
+
+Next step: launch the fixed developer source for the mixed-language speech
+smoke test. No push, tag, AppImage CI run, or release action is authorized yet.
