@@ -125,7 +125,9 @@ belonging to the active output device. This lets wired, USB, and Bluetooth
 headsets follow the desktop's current output choice. WirePlumber switches a
 Bluetooth headset to its microphone profile for the recording and restores its
 music profile afterward. VoiceTyping stops with a clear warning instead of
-silently using the laptop microphone when an active headset has no input.
+silently using the laptop microphone when an active headset has no input. If
+the selected PipeWire source starts muted, VoiceTyping temporarily unmutes it
+for the explicit recording and restores the previous mute state afterward.
 
 Show the current non-sensitive routing decision without opening the microphone:
 

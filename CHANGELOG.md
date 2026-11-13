@@ -25,6 +25,8 @@
   during transcription no longer churns or strands the overlay state.
 - Azerbaijani and English are hinted together, while Live and batch
   transcription share configurable vocabulary for embedded technical terms.
+- Muted PipeWire headset microphones are temporarily unmuted only for an
+  explicit recording, then their prior mute state is restored.
 
 ### Privacy
 

@@ -64,8 +64,9 @@ desktop session:
 1. Verify the AppImage SHA-256 file and launch the app. Confirm that the tray
    and floating indicator appear.
 2. Press F8, speak, then press F8 again. Confirm text reaches the focused field.
-3. Test the built-in microphone and USB and Bluetooth headset routes. Confirm
-   the prior PipeWire route returns after recording.
+3. Test the built-in microphone and USB and Bluetooth headset routes. Also test
+   a pre-muted headset source. Confirm the prior PipeWire route and mute state
+   return after recording.
 4. Complete a successful transcription. Confirm no audio archive remains.
 5. Disconnect the network during a recording, verify recovery audio is stored
    privately, restore connectivity, and confirm retry removes the audio while

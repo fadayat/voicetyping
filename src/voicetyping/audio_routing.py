@@ -290,6 +290,41 @@ class SystemAudioRouter:
     def _set_default(self, source_id: int) -> None:
         self._runner(["wpctl", "set-default", str(source_id)])
 
+    def _source_muted(self, source_id: int) -> bool:
+        try:
+            output = self._runner(["wpctl", "get-volume", str(source_id)])
+        except (OSError, subprocess.SubprocessError) as error:
+            raise AudioRoutingError("Could not inspect microphone mute state") from error
+        if "[MUTED]" in output.upper():
+            return True
+        if "volume:" not in output.casefold():
+            raise AudioRoutingError("PipeWire returned invalid microphone volume data")
+        return False
+
+    def _set_source_muted(self, source_id: int, muted: bool) -> None:
+        self._runner(
+            ["wpctl", "set-mute", str(source_id), "1" if muted else "0"]
+        )
+
+    def _restore_source_mute(
+        self,
+        source_id: int,
+        source_name: str,
+        muted: bool,
+    ) -> bool:
+        try:
+            self._set_source_muted(source_id, muted)
+            return True
+        except (OSError, subprocess.SubprocessError):
+            replacement = self._find_source_by_name(source_name)
+            if replacement is None:
+                return False
+            try:
+                self._set_source_muted(replacement.object_id, muted)
+                return True
+            except (OSError, subprocess.SubprocessError):
+                return False
+
     def _wait_for_default(
         self,
         source_id: int,
@@ -342,23 +377,25 @@ class SystemAudioRouter:
 
         try:
             previous = self._inspect("@DEFAULT_AUDIO_SOURCE@")
+            source_was_muted = self._source_muted(selection.source_id)
         except (AudioRoutingError, OSError, subprocess.SubprocessError) as error:
             raise AudioRoutingError(
-                "Could not preserve the current default microphone"
+                "Could not preserve the current microphone state"
             ) from error
 
-        if (
+        default_changed = not (
             previous.object_id == selection.source_id
             or previous.name == selection.source_name
-        ):
-            route = ActiveInputRoute(selection)
-            if on_route is not None and not on_route(route):
-                route.restore()
-                raise AudioRoutingError("Microphone activation was cancelled")
-            return route
+        )
 
         def restore() -> None:
-            if not self._restore_source(previous):
+            if source_was_muted and not self._restore_source_mute(
+                selection.source_id,
+                selection.source_name,
+                True,
+            ):
+                print("Could not restore the microphone mute state.")
+            if default_changed and not self._restore_source(previous):
                 print("Could not restore the previous default microphone.")
 
         route = ActiveInputRoute(selection, restore)
@@ -367,18 +404,23 @@ class SystemAudioRouter:
             raise AudioRoutingError("Microphone activation was cancelled")
 
         try:
-            if not route._activate(lambda: self._set_default(selection.source_id)):
-                raise AudioRoutingError("Microphone activation was cancelled")
-            if not self._wait_for_default(
-                selection.source_id,
-                selection.source_name,
-                cancelled=lambda: route.cancelled,
-            ):
-                if route.cancelled:
+            if default_changed:
+                if not route._activate(lambda: self._set_default(selection.source_id)):
                     raise AudioRoutingError("Microphone activation was cancelled")
-                raise AudioRoutingError(
-                    f"Could not activate microphone {selection.source_description}"
-                )
+                if not self._wait_for_default(
+                    selection.source_id,
+                    selection.source_name,
+                    cancelled=lambda: route.cancelled,
+                ):
+                    if route.cancelled:
+                        raise AudioRoutingError("Microphone activation was cancelled")
+                    raise AudioRoutingError(
+                        f"Could not activate microphone {selection.source_description}"
+                    )
+            if source_was_muted and not route._activate(
+                lambda: self._set_source_muted(selection.source_id, False)
+            ):
+                raise AudioRoutingError("Microphone activation was cancelled")
         except (AudioRoutingError, OSError, subprocess.SubprocessError) as error:
             route.restore()
             if isinstance(error, AudioRoutingError):

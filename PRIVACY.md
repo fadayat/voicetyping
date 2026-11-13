@@ -2,7 +2,9 @@
 
 VoiceTyping records only after the user starts a recording. It sends audio to
 Google for transcription. A failed Live session can also send the complete
-recording through the batch transcription path.
+recording through the batch transcription path. Starting a recording may
+temporarily unmute the selected PipeWire microphone; VoiceTyping restores its
+previous mute state when recording ends or the application closes.
 
 Successful recordings are not archived. When transcription fails, VoiceTyping
 may keep a temporary recovery recording so it can retry later, including after

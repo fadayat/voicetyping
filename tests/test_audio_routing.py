@@ -27,6 +27,11 @@ class RouterFixture:
         self.default_source_id = 20
         self.default_source_name = "alsa_input.internal"
         self.set_default_calls = []
+        self.set_mute_calls = []
+        self.source_mutes = {
+            item["id"]: bool(item.get("muted", False))
+            for item in (inputs or [])
+        }
         self.api = api
         self.device_name = name
         self.inputs = inputs or []
@@ -68,6 +73,16 @@ class RouterFixture:
             self.default_source_id = source_id
             selected = next((item for item in self.inputs if item["id"] == source_id), None)
             self.default_source_name = selected["props"]["node.name"] if selected else "alsa_input.internal"
+            return ""
+        if command[:2] == ["wpctl", "get-volume"]:
+            source_id = int(command[2])
+            suffix = " [MUTED]" if self.source_mutes.get(source_id, False) else ""
+            return f"Volume: 1.00{suffix}"
+        if command[:2] == ["wpctl", "set-mute"]:
+            source_id = int(command[2])
+            muted = command[3] == "1"
+            self.set_mute_calls.append((source_id, muted))
+            self.source_mutes[source_id] = muted
             return ""
         raise AssertionError(f"Unexpected command: {command}")
 
@@ -204,6 +219,47 @@ class SystemAudioRouterTests(unittest.TestCase):
 
         self.assertEqual(fixture.set_default_calls, [21, 20])
         self.assertEqual(fixture.default_source_id, 20)
+
+    def test_muted_headset_microphone_is_temporarily_unmuted_and_restored(self):
+        fixture = RouterFixture(api="bluez5", name="Bluetooth Headset", inputs=[
+            {
+                "id": 21,
+                "muted": True,
+                "props": {
+                    "device.id": "10",
+                    "media.class": "Audio/Source",
+                    "node.name": "bluez_input.headset",
+                    "node.description": "Headset Microphone",
+                    "bluez5.loopback": "true",
+                },
+            }
+        ])
+
+        route = self.make_router(fixture).activate()
+
+        self.assertFalse(fixture.source_mutes[21])
+        self.assertEqual(fixture.set_mute_calls, [(21, False)])
+        route.restore()
+        self.assertTrue(fixture.source_mutes[21])
+        self.assertEqual(fixture.set_mute_calls, [(21, False), (21, True)])
+
+    def test_unmuted_microphone_state_is_left_unchanged(self):
+        fixture = RouterFixture(inputs=[
+            {
+                "id": 21,
+                "props": {
+                    "device.id": "10",
+                    "media.class": "Audio/Source",
+                    "node.name": "usb_input.headset",
+                    "node.description": "USB Headset Microphone",
+                },
+            }
+        ])
+
+        route = self.make_router(fixture).activate()
+        route.restore()
+
+        self.assertEqual(fixture.set_mute_calls, [])
 
     def test_route_is_published_before_default_input_changes(self):
         fixture = RouterFixture(inputs=[
