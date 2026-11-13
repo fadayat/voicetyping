@@ -15,7 +15,7 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 | 6. Add CI and draft-release automation | Complete | PR/main runs source and wheel gates. Manual runs build AppImage and `.deb` from the tested wheel without publishing. Matching `v*` tags run both artifact harnesses, create checksums and `.zsync`, then prepare a draft release only. | `f505c9d` | Run the final local gates and leave desktop artifact smoke tests pending until CI produces release candidates. |
 | 7. Release gates | Developer smoke in progress; package rerun pending | The source harness passes 208 tests. A real Fedora developer launch uses system GTK/Cairo, safely migrates legacy crash spools, and now has serialized rapid controls plus Azerbaijani/English term hints. Earlier wheel and Ubuntu `.deb` gates passed, but must be repeated after the latest runtime fixes. | `d551ea0` | Restart the developer runtime and smoke-test rapid controls plus mixed Azerbaijani/English transcription; then rebuild and revalidate the wheel and `.deb` before any authorized push or AppImage CI run. |
 | 8. Stabilize rapid controls | Automated checks complete; live X11 smoke pending | Shortcut, tray, signal, and portal requests use one bounded controller. X11 repeat pairs are filtered, startup feedback is immediate, and provisional audio routes are restored safely during shutdown. | `4d3aaab` | Run the fixed developer source and verify that rapid or held F8 input cannot strand the tray icon or overlay. |
-| 9. Preserve mixed-language terms | Automated checks complete; live speech smoke pending | Azerbaijani and English hints plus configurable technical vocabulary now reach both Live and batch transcription. Generic fallback prompts preserve code-switching. | `d551ea0` | Run the developer source and verify embedded terms such as `fallback`, `API`, and `GitHub` in Azerbaijani sentences. |
+| 9. Preserve mixed-language terms | Developer runtime active; live speech result pending | Azerbaijani and English hints plus configurable technical vocabulary now reach both Live and batch transcription. Generic fallback prompts preserve code-switching. | `d551ea0` | Verify embedded terms such as `fallback`, `API`, and `GitHub` in Azerbaijani sentences. |
 
 ## Decisions
 
@@ -102,8 +102,10 @@ test. No push, tag, AppImage CI run, or release action is authorized yet.
 - [x] README, changelog, and privacy documentation describe vocabulary behavior
   and disclosure to Google.
 - [x] Pass 94 focused transcription tests and all 208 offline source tests.
-- [ ] Restart the Fedora developer runtime with commit `d551ea0` and manually
-  verify Azerbaijani sentences containing `fallback`, `API`, and `GitHub`.
+- [x] Restart the Fedora developer runtime with commit `d551ea0`; the tray and
+  overlay processes are active from the unified source package.
+- [ ] Manually verify Azerbaijani sentences containing `fallback`, `API`, and
+  `GitHub`.
 - [ ] Rebuild and rerun wheel and Ubuntu `.deb` gates after the live smoke test.
 
 Next step: launch the fixed developer source for the mixed-language speech
