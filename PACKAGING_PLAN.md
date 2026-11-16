@@ -13,7 +13,7 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 | 4. Make wheel the source for all installers | Complete | `uv.lock` and the hash-pinned export agree. `install.sh`, AppImage, and `.deb` now validate and install one supplied wheel; the isolated installer passed twice while preserving two rollback releases. | `3a6084f` | Validate the release harness and finish the privacy, README, and changelog documentation. |
 | 5. Add release harness and documentation | Complete | The isolated source and wheel harnesses pass, cover every packaged module and both entry points, and verify the installer twice without reading the user's app state. README, changelog, privacy, metainfo, and manual smoke steps describe v2.3 behavior. | `5b1b3a5` | Validate CI syntax and make PR, manual-artifact, and tag workflows consume the same tested wheel. |
 | 6. Add CI and draft-release automation | Complete | PR/main runs source and wheel gates. Manual runs build AppImage and `.deb` from the tested wheel without publishing. Matching `v*` tags run both artifact harnesses, create checksums and `.zsync`, then prepare a draft release only. | `f505c9d` | Run the final local gates and leave desktop artifact smoke tests pending until CI produces release candidates. |
-| 7. Release gates | AppImage CI fix pending rerun | The source, wheel, and Ubuntu `.deb` gates pass on PR #5. The first AppImage run exposed an AppRun v2 bootstrap incompatibility with a shell-script main executable; the recipe now bootstraps from bundled Python and restores the launcher afterward. | `8b0eec5` | Rerun artifact CI, then verify the downloaded AppImage and `.deb` before any tag or release action. |
+| 7. Release gates | Automated gates complete; interactive smoke pending | PR #5 passes source, wheel, AppImage, and Ubuntu `.deb` jobs. Downloaded checksums pass, and the AppImage passes normal launch, extract-and-run, version, and static-runtime checks on Fedora. | `9436f09` | Launch the candidate AppImage for tray, F8, headset, mixed-language, and recovery smoke tests. |
 | 8. Stabilize rapid controls | Automated checks complete; live X11 smoke pending | Shortcut, tray, signal, and portal requests use one bounded controller. X11 repeat pairs are filtered, startup feedback is immediate, and provisional audio routes are restored safely during shutdown. | `4d3aaab` | Run the fixed developer source and verify that rapid or held F8 input cannot strand the tray icon or overlay. |
 | 9. Preserve mixed-language terms | Developer runtime active; live speech result pending | Azerbaijani and English hints plus configurable technical vocabulary now reach both Live and batch transcription. Generic fallback prompts preserve code-switching. | `d551ea0` | Verify embedded terms such as `fallback`, `API`, and `GitHub` in Azerbaijani sentences. |
 | 10. Restore muted headset capture | Complete | PipeWire sources that begin muted are temporarily unmuted only for an explicit recording, then restored on stop, error, or shutdown. The user confirmed a real Buds2 Pro recording and the source returned to `MUTED`. | `5d85ef1` | Keep this behavior in the wheel, `.deb`, and AppImage artifact smoke tests. |
@@ -21,6 +21,7 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 | 12. Open review pull request | Complete | Draft PR #5 targets `main` from `feat/v2.3-unified`; its source-and-wheel check started automatically. | `feadc54` | Push this checkpoint, then run the authorized manual AppImage/`.deb` workflow from the same branch. |
 | 13. Bootstrap pre-merge artifacts | Complete | GitHub cannot dispatch a new workflow before it reaches the default branch. The read-only artifact workflow now also accepts an explicit `build-release-artifacts` PR label, without enabling release publication. | `de54b89` | Push this checkpoint, apply the artifact label to PR #5, and inspect all resulting jobs and packages. |
 | 14. Fix AppRun v2 bootstrap | Complete | Artifact run `43822116243` passed source, wheel, and `.deb`, but AppRun v2 rejected the shell launcher while selecting an ELF architecture. The recipe now uses bundled Python for builder setup, retains the launcher as the final runtime entry point, and passes all 210 local source tests. | `8b0eec5` | Push the fix, retrigger the label gate, and inspect the rebuilt artifacts. |
+| 15. Validate review artifacts | Automated checks complete; interactive smoke pending | Run `43822778205` passes source, wheel, AppImage, and Ubuntu `.deb` validation while skipping release publication. All three downloaded checksums pass; the AppImage also passes the Fedora artifact harness. | `9436f09` | Start the downloaded AppImage and complete the user-visible desktop smoke test before merging or tagging. |
 
 ## Decisions
 
@@ -145,13 +146,15 @@ or release action is authorized.
   user-confirmed Buds2 Pro recording smoke test.
 - [x] Open draft PR #5 into `main`; its source-and-wheel check starts
   automatically.
-- [ ] Run the manual AppImage and Ubuntu `.deb` workflow from the review branch.
-- [ ] Download and smoke-test both workflow artifacts before any tag or draft
-  release.
+- [x] Run the label-gated AppImage and Ubuntu `.deb` workflow from the review
+  branch without publishing a release.
+- [x] Download the wheel, AppImage, and `.deb`; verify every checksum and run
+  the AppImage harness on Fedora.
+- [ ] Complete the interactive AppImage desktop smoke test before any tag or
+  draft release.
 
-Next step: push this PR checkpoint, then run the authorized manual artifact
-workflow and inspect its AppImage and `.deb` outputs. No tag, draft release, or
-publication action is authorized.
+Next step: start the downloaded AppImage for the interactive Fedora smoke test.
+No tag, draft release, merge, or publication action is authorized.
 
 ## Artifact workflow bootstrap checkpoint
 
@@ -165,10 +168,15 @@ publication action is authorized.
 - [x] Pass source, wheel, and Ubuntu `.deb` validation in run `43822116243`.
 - [x] Diagnose the AppImage failure as AppRun v2 rejecting a shell-script main
   executable during architecture selection.
-- [ ] Push the ELF bootstrap fix and retrigger the PR label gate.
-- [ ] Pass AppImage validation, then download and inspect all uploaded
-  artifacts.
+- [x] Push the ELF bootstrap fix and retrigger the PR label gate.
+- [x] Pass wheel, AppImage, and `.deb` validation in run `43822778205`; confirm
+  the draft-release job is skipped.
+- [x] Download all artifacts to
+  `/home/fadayat/Downloads/VoiceTyping-v2.3.0-candidate-43822778205`.
+- [x] Verify all SHA-256 files and pass the AppImage harness on Fedora with
+  version `2.3.0`, normal execution, extract-and-run, and static ELF checks.
+- [ ] Complete tray, F8, headset, mixed-language, offline-recovery, shortcut,
+  and autostart smoke tests interactively.
 
-Next step: retrigger `build-release-artifacts` after the AppRun bootstrap fix is
-on the remote branch. No tag, draft release, or publication action is
-authorized.
+Next step: run the downloaded AppImage interactively. No tag, draft release,
+merge, or publication action is authorized.
