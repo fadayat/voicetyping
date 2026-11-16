@@ -13,11 +13,12 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 | 4. Make wheel the source for all installers | Complete | `uv.lock` and the hash-pinned export agree. `install.sh`, AppImage, and `.deb` now validate and install one supplied wheel; the isolated installer passed twice while preserving two rollback releases. | `3a6084f` | Validate the release harness and finish the privacy, README, and changelog documentation. |
 | 5. Add release harness and documentation | Complete | The isolated source and wheel harnesses pass, cover every packaged module and both entry points, and verify the installer twice without reading the user's app state. README, changelog, privacy, metainfo, and manual smoke steps describe v2.3 behavior. | `5b1b3a5` | Validate CI syntax and make PR, manual-artifact, and tag workflows consume the same tested wheel. |
 | 6. Add CI and draft-release automation | Complete | PR/main runs source and wheel gates. Manual runs build AppImage and `.deb` from the tested wheel without publishing. Matching `v*` tags run both artifact harnesses, create checksums and `.zsync`, then prepare a draft release only. | `f505c9d` | Run the final local gates and leave desktop artifact smoke tests pending until CI produces release candidates. |
-| 7. Release gates | Review branch pushed; package rerun pending | The source harness passes 210 tests. Fedora developer smoke confirms the Buds2 Pro route records successfully and restores its prior mute state. Earlier wheel and Ubuntu `.deb` gates passed, but must be repeated after the latest runtime fixes. | `5d85ef1` | Verify mixed Azerbaijani/English transcription, then run PR and artifact CI before any tag or release action. |
+| 7. Release gates | Draft PR open; package CI in progress | The source harness passes 210 tests. Fedora developer smoke confirms the Buds2 Pro route records successfully and restores its prior mute state. PR source/wheel checks started for the review branch; AppImage and `.deb` reruns remain pending. | `5d85ef1` | Complete PR and manual-artifact CI, then verify the downloaded packages before any tag or release action. |
 | 8. Stabilize rapid controls | Automated checks complete; live X11 smoke pending | Shortcut, tray, signal, and portal requests use one bounded controller. X11 repeat pairs are filtered, startup feedback is immediate, and provisional audio routes are restored safely during shutdown. | `4d3aaab` | Run the fixed developer source and verify that rapid or held F8 input cannot strand the tray icon or overlay. |
 | 9. Preserve mixed-language terms | Developer runtime active; live speech result pending | Azerbaijani and English hints plus configurable technical vocabulary now reach both Live and batch transcription. Generic fallback prompts preserve code-switching. | `d551ea0` | Verify embedded terms such as `fallback`, `API`, and `GitHub` in Azerbaijani sentences. |
 | 10. Restore muted headset capture | Complete | PipeWire sources that begin muted are temporarily unmuted only for an explicit recording, then restored on stop, error, or shutdown. The user confirmed a real Buds2 Pro recording and the source returned to `MUTED`. | `5d85ef1` | Keep this behavior in the wheel, `.deb`, and AppImage artifact smoke tests. |
-| 11. Publish review branch | Complete | `feat/v2.3-unified` is available on `origin` with all v2.3 source, tests, documentation, and local checkpoints. | `4d1cd65` | Create or review a pull request, then explicitly authorize the manual AppImage/`.deb` artifact workflow. |
+| 11. Publish review branch | Complete | `feat/v2.3-unified` is available on `origin` with all v2.3 source, tests, documentation, and local checkpoints. | `4d1cd65` | Open a draft pull request for CI and review. |
+| 12. Open review pull request | Complete | Draft PR #5 targets `main` from `feat/v2.3-unified`; its source-and-wheel check started automatically. | `feadc54` | Push this checkpoint, then run the authorized manual AppImage/`.deb` workflow from the same branch. |
 
 ## Decisions
 
@@ -67,9 +68,9 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 - Final review fixes cover AppImage toggle identity across transient mounts,
   fail-closed ELF inspection, exact `.deb` metadata comparison, recovery of
   interrupted WAV staging files, and FIFO access to every recovered text.
-- AppImage artifact checks and the desktop smoke test remain pending because
-  the AppImage toolchain intentionally runs in CI and no branch push, tag, or
-  release action is authorized yet.
+- AppImage artifact checks and the desktop smoke test remain pending. Draft PR
+  #5 is open, and the authorized manual artifact workflow is the next phase.
+  No tag or release action is authorized.
 
 ## Rapid-control checkpoint
 
@@ -91,8 +92,8 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 - [ ] Rebuild and rerun wheel and Ubuntu `.deb` gates after the live smoke test.
 
 Next step: launch the fixed developer source for the manual rapid-control smoke
-test. The review branch is on `origin`; no pull request, workflow run, tag, or
-release action is authorized yet.
+test. Draft PR #5 is open, and package CI is authorized. No tag or release
+action is authorized.
 
 ## Mixed-language checkpoint
 
@@ -112,8 +113,8 @@ release action is authorized yet.
 - [ ] Rebuild and rerun wheel and Ubuntu `.deb` gates after the live smoke test.
 
 Next step: run the mixed-language speech smoke test from the active developer
-service. The review branch is on `origin`; no pull request, workflow run, tag,
-or release action is authorized yet.
+service. Draft PR #5 is open, and package CI is authorized. No tag or release
+action is authorized.
 
 ## Muted-headset checkpoint
 
@@ -133,18 +134,19 @@ or release action is authorized yet.
 - [ ] Rebuild and rerun wheel and Ubuntu `.deb` gates after the live smoke test.
 
 Next step: keep the confirmed headset behavior in the rebuilt wheel, `.deb`,
-and AppImage checks. The review branch is on `origin`; no pull request,
-workflow run, tag, or release action is authorized yet.
+and AppImage checks. Draft PR #5 is open, and package CI is authorized. No tag
+or release action is authorized.
 
 ## Remote branch checkpoint
 
 - [x] Push `feat/v2.3-unified` to `origin` after 210 offline tests and the
   user-confirmed Buds2 Pro recording smoke test.
-- [ ] Open or review the pull request into `main`.
+- [x] Open draft PR #5 into `main`; its source-and-wheel check starts
+  automatically.
 - [ ] Run the manual AppImage and Ubuntu `.deb` workflow from the review branch.
 - [ ] Download and smoke-test both workflow artifacts before any tag or draft
   release.
 
-Next step: verify the remaining mixed-language speech case, then obtain explicit
-authorization for the pull request or manual artifact workflow. No tag, draft
-release, or publication action is authorized yet.
+Next step: push this PR checkpoint, then run the authorized manual artifact
+workflow and inspect its AppImage and `.deb` outputs. No tag, draft release, or
+publication action is authorized.
