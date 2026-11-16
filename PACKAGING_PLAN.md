@@ -22,6 +22,7 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 | 13. Bootstrap pre-merge artifacts | Complete | GitHub cannot dispatch a new workflow before it reaches the default branch. The read-only artifact workflow now also accepts an explicit `build-release-artifacts` PR label, without enabling release publication. | `de54b89` | Push this checkpoint, apply the artifact label to PR #5, and inspect all resulting jobs and packages. |
 | 14. Fix AppRun v2 bootstrap | Complete | Artifact run `43822116243` passed source, wheel, and `.deb`, but AppRun v2 rejected the shell launcher while selecting an ELF architecture. The recipe now uses bundled Python for builder setup, retains the launcher as the final runtime entry point, and passes all 210 local source tests. | `8b0eec5` | Push the fix, retrigger the label gate, and inspect the rebuilt artifacts. |
 | 15. Validate review artifacts | Automated checks complete; interactive smoke pending | Run `43822778205` passes source, wheel, AppImage, and Ubuntu `.deb` validation while skipping release publication. All three downloaded checksums pass; the AppImage also passes the Fedora artifact harness. | `9436f09` | Start the downloaded AppImage and complete the user-visible desktop smoke test before merging or tagging. |
+| 16. Launch AppImage candidate | Interactive smoke in progress | The developer service is stopped, the downloaded AppImage runs as `voicetyping-appimage-v2_3.service` without restarts, its tray/overlay processes are active, and the GNOME F8 command points to this exact image. | `2837496` | Test F8 controls, Buds2 Pro capture, mixed-language terms, and offline recovery; then record the results before any merge or tag. |
 
 ## Decisions
 
@@ -180,3 +181,23 @@ No tag, draft release, merge, or publication action is authorized.
 
 Next step: run the downloaded AppImage interactively. No tag, draft release,
 merge, or publication action is authorized.
+
+## AppImage desktop smoke checkpoint
+
+- [x] Stop the transient developer service without changing the existing
+  installed release or login autostart files.
+- [x] Point the current GNOME F8 binding to the downloaded AppImage's
+  `--toggle` command.
+- [x] Start `voicetyping-appimage-v2_3.service`; confirm the application and
+  overlay processes are active with zero service restarts.
+- [ ] Verify normal F8 start/stop, quick double press, held F8, tray toggle, and
+  input while transcription is processing.
+- [ ] Verify Buds2 Pro capture and restoration of its original mute state.
+- [ ] Speak Azerbaijani sentences containing `fallback`, `API`, and `GitHub`.
+- [ ] Verify successful transcription plus offline failure and later recovery.
+- [ ] Decide whether to keep the candidate running or restore the developer
+  service after the smoke test.
+
+Next step: perform the live F8, headset, and mixed-language checks in the
+running AppImage. The old installed v2.2.0 login autostart remains unchanged;
+no merge, tag, draft release, or publication action is authorized.
