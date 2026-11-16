@@ -21,8 +21,11 @@ AppDir:
     icon: voicetyping
     # Replaced from voicetyping.__version__ by build-appimage.sh.
     version: 0.0.0
-    exec: usr/bin/voicetyping-launcher
-    exec_args: "$@"
+    # AppRun v2 resolves its architecture from an ELF main executable. The
+    # build script restores the argument-preserving launcher in AppRun.env
+    # after appimage-builder finishes its runtime setup.
+    exec: usr/bin/python3
+    exec_args: "-m voicetyping.app $@"
 
   apt:
     arch:

@@ -19,12 +19,18 @@ class WheelDrivenPackagingTests(unittest.TestCase):
 
     def test_appimage_recipe_installs_the_supplied_wheel(self):
         recipe = self.read("packaging/appimage/AppImageBuilder.yml")
+        builder = self.read("packaging/appimage/build-appimage.sh")
         launcher = self.read("packaging/appimage/voicetyping-launcher")
 
         self.assertIn("VOICETYPING_WHEEL", recipe)
         self.assertIn('"$WHEEL_PATH"', recipe)
         self.assertNotIn("/usr/src/voicetyping", recipe)
         self.assertNotIn("2.2.0", recipe)
+        self.assertIn("exec: usr/bin/python3", recipe)
+        self.assertNotIn("exec: usr/bin/voicetyping-launcher", recipe)
+        self.assertIn(
+            "APPDIR_EXEC_PATH=$APPDIR/usr/bin/voicetyping-launcher", builder
+        )
         self.assertIn("-m voicetyping.app", launcher)
 
     def test_deb_builder_installs_wheel_into_vendor_directory(self):
