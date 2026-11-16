@@ -1,18 +1,19 @@
 import io
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
 import unittest
 import wave
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 import numpy as np
 
-import voicetyping as vt
+from voicetyping import app as vt
 
 
 class FakePanel:
@@ -253,6 +254,7 @@ class AnimationPanelTests(unittest.TestCase):
     def test_classifies_azerbaijani_status_messages(self):
         panel = vt.NotificationPanel.__new__(vt.NotificationPanel)
         cases = {
+            "Mikrofon hazırlanır…": "starting",
             "Səs yazılır — dayandırmaq üçün F8": "recording",
             "Mətnə çevrilir…": "transcribing",
             "Hazırdır — Ctrl+V ilə yapışdırın": "copied",
@@ -288,6 +290,10 @@ class AnimationPanelTests(unittest.TestCase):
         panel.show("Mətnə çevrilir — zəhmət olmasa gözləyin", hide_after=1500)
 
         self.assertEqual(panel._desired_show, ("transcribing", 1500))
+        self.assertIsNone(panel._desired_deadline)
+
+        panel.show("Mikrofon hazırlanır…", hide_after=1500)
+        self.assertEqual(panel._desired_show, ("starting", 1500))
         self.assertIsNone(panel._desired_deadline)
 
     def test_audio_queue_is_latest_only_and_stays_bounded(self):
@@ -350,6 +356,24 @@ class AnimationPanelTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_transcription_preferences_default_to_azerbaijani_english_and_terms(self):
+        language_codes, vocabulary = vt.transcription_preferences({})
+
+        self.assertEqual(language_codes, ("az-AZ", "en-US"))
+        self.assertIn("fallback", vocabulary)
+        self.assertIn("API", vocabulary)
+
+    def test_transcription_preferences_allow_auto_detection_and_custom_terms(self):
+        language_codes, vocabulary = vt.transcription_preferences(
+            {
+                "language_codes": [],
+                "custom_vocabulary": [" fallback ", "fallback", "Kubernetes"],
+            }
+        )
+
+        self.assertEqual(language_codes, ())
+        self.assertEqual(vocabulary, ("fallback", "Kubernetes"))
+
     def test_appimage_native_library_is_resolved_from_bundle(self):
         with tempfile.TemporaryDirectory() as directory:
             library = Path(directory) / "usr/lib/x86_64-linux-gnu/libportaudio.so.2"
@@ -368,7 +392,37 @@ class ConfigTests(unittest.TestCase):
         ) as print_message:
             self.assertEqual(vt.main(["--version"]), 0)
         acquire.assert_not_called()
-        print_message.assert_called_once_with("VoiceTyping 2.2.0")
+        print_message.assert_called_once_with("VoiceTyping 2.3.0")
+
+    def test_tray_recording_action_queues_toggle_without_blocking_tray(self):
+        actions = {}
+        fake_pystray = ModuleType("pystray")
+
+        def menu_item(label, action):
+            actions[label] = action
+            return SimpleNamespace(label=label, action=action)
+
+        class FakeIcon:
+            def __init__(self, _name, _image, _title, _menu):
+                pass
+
+            def run(self):
+                actions["Start/stop recording"](None, None)
+
+        fake_pystray.MenuItem = menu_item
+        fake_pystray.Icon = FakeIcon
+        app = SimpleNamespace(
+            request_toggle=mock.Mock(return_value=True),
+            copy_last_transcription=mock.Mock(),
+            copy_last_recovered_transcription=mock.Mock(),
+            retry_saved_recordings=mock.Mock(),
+            open_recovery_folder=mock.Mock(),
+        )
+
+        with mock.patch.dict(sys.modules, {"pystray": fake_pystray}):
+            vt.run_tray(app)
+
+        app.request_toggle.assert_called_once_with()
 
     def test_save_is_private_atomic_and_preserves_other_settings(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -394,6 +448,29 @@ class ConfigTests(unittest.TestCase):
                 self.assertFalse(vt.send_toggle(pid_file))
         kill.assert_not_called()
 
+    def test_process_validation_accepts_supported_launch_forms(self):
+        launch_forms = (
+            b"/usr/bin/python3\0/home/user/voicetyping.py\0",
+            b"/home/user/.venv/bin/voicetyping\0",
+            b"/usr/bin/python3\0-m\0voicetyping.app\0",
+        )
+        for command_line in launch_forms:
+            with self.subTest(command_line=command_line), mock.patch.object(
+                vt.Path, "read_bytes", return_value=command_line
+            ):
+                self.assertTrue(vt.is_voicetyping_process(123))
+
+        with mock.patch.object(
+            vt.Path, "read_bytes", return_value=b"/usr/bin/python3\0/tmp/unrelated.py\0"
+        ):
+            self.assertFalse(vt.is_voicetyping_process(123))
+        with mock.patch.object(
+            vt.Path,
+            "read_bytes",
+            return_value=b"/usr/bin/python3\0/tmp/unrelated.py\0/home/user/voicetyping.py\0",
+        ):
+            self.assertFalse(vt.is_voicetyping_process(123))
+
     def test_settings_mode_never_claims_pid_file(self):
         with mock.patch.object(vt, "get_api_key", return_value="key"), mock.patch.object(
             vt, "acquire_pid_file"
@@ -409,15 +486,15 @@ class ConfigTests(unittest.TestCase):
 
         with mock.patch.object(vt, "acquire_pid_file", return_value=True), mock.patch.object(
             vt, "release_pid_file"
-        ), mock.patch("desktop_integration.setup_global_shortcut", return_value="not_gnome"), mock.patch(
-            "desktop_environment.detect_desktop_environment", return_value=environment
-        ), mock.patch("setup_shortcut.get_shortcut", return_value="<Ctrl>F9"), mock.patch.object(
+        ), mock.patch("voicetyping.desktop_integration.setup_global_shortcut", return_value="not_gnome"), mock.patch(
+            "voicetyping.desktop_environment.detect_desktop_environment", return_value=environment
+        ), mock.patch("voicetyping.setup_shortcut.get_shortcut", return_value="<Ctrl>F9"), mock.patch.object(
             vt, "get_api_key", return_value="key"
         ), mock.patch.object(vt, "load_config", return_value={"auto_paste": True, "live_transcription": False}), mock.patch.object(
             vt, "create_client", return_value=FakeClient()
         ), mock.patch.object(vt, "NotificationPanel", return_value=FakePanel()), mock.patch.object(
             vt, "VoiceTypingApp", return_value=app
-        ), mock.patch("desktop_integration.build_paste_action") as build_paste, mock.patch.object(
+        ), mock.patch("voicetyping.desktop_integration.build_paste_action") as build_paste, mock.patch.object(
             vt, "_start_wayland_portal_bootstrap", bootstrap
         ), mock.patch.object(vt, "run_tray") as run_tray:
             self.assertEqual(vt.main([]), 0)
@@ -438,8 +515,9 @@ class ConfigTests(unittest.TestCase):
                 self.listener = None
                 holder["app"] = self
 
-            def toggle(self):
+            def request_toggle(self):
                 self.toggle_event.set()
+                return True
 
             def shutdown(self):
                 cleanup_handlers.append(vt.signal.getsignal(vt.signal.SIGUSR1))
@@ -456,14 +534,14 @@ class ConfigTests(unittest.TestCase):
 
         with mock.patch.object(vt, "acquire_pid_file", return_value=True), mock.patch.object(
             vt, "release_pid_file", side_effect=release_pid
-        ), mock.patch("desktop_integration.setup_global_shortcut", return_value="active"), mock.patch.object(
+        ), mock.patch("voicetyping.desktop_integration.setup_global_shortcut", return_value="active"), mock.patch.object(
             vt, "get_api_key", side_effect=key_during_startup
         ), mock.patch.object(vt, "create_client", return_value=object()), mock.patch.object(
             vt, "NotificationPanel", return_value=FakePanel()
         ), mock.patch.object(vt, "VoiceTypingApp", DummyApp), mock.patch.object(
             vt, "run_tray", side_effect=run_tray
         ), mock.patch(
-            "desktop_environment.detect_desktop_environment",
+            "voicetyping.desktop_environment.detect_desktop_environment",
             return_value=SimpleNamespace(is_wayland=False, is_gnome=False, is_x11=False),
         ):
             self.assertEqual(vt.main([]), 0)
@@ -474,6 +552,18 @@ class ConfigTests(unittest.TestCase):
 
 
 class AppStateTests(unittest.TestCase):
+    def setUp(self):
+        recovery_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(recovery_tmp.cleanup)
+        from voicetyping.recording_recovery import RecoveryStore
+
+        recovery_factory = mock.patch(
+            "voicetyping.app.RecoveryStore",
+            side_effect=lambda: RecoveryStore(Path(recovery_tmp.name) / "recovery"),
+        )
+        recovery_factory.start()
+        self.addCleanup(recovery_factory.stop)
+
     def test_late_portal_resources_are_closed_after_shutdown(self):
         app = vt.VoiceTypingApp(FakeClient(), FakePanel())
         app.state = "shutting_down"
@@ -545,6 +635,221 @@ class AppStateTests(unittest.TestCase):
         self.assertEqual(len(client.calls), 1)
         self.assertTrue(stream.closed)
 
+    def test_processing_toggle_does_not_churn_persistent_overlay_state(self):
+        panel = FakePanel()
+        app = vt.VoiceTypingApp(FakeClient(), panel)
+        app.state = "processing"
+
+        self.assertFalse(app.toggle())
+
+        self.assertEqual(panel.messages, [])
+        app.shutdown()
+
+    def test_requested_toggles_serialize_slow_start_and_pending_stop(self):
+        panel = FakePanel()
+        app = vt.VoiceTypingApp(FakeClient(), panel)
+        start_entered = threading.Event()
+        release_start = threading.Event()
+        stop_finished = threading.Event()
+        calls = []
+
+        def slow_start():
+            calls.append("start")
+            with app._lock:
+                app.state = "starting"
+            start_entered.set()
+            release_start.wait(1)
+            with app._lock:
+                if not app._shutdown.is_set():
+                    app.state = "recording"
+            return True
+
+        def stop():
+            calls.append("stop")
+            with app._lock:
+                app.state = "processing"
+            stop_finished.set()
+            return True
+
+        app.start_recording = slow_start
+        app.request_stop = stop
+        with mock.patch.object(vt, "TOGGLE_DEBOUNCE_SECONDS", 0):
+            self.assertTrue(app.request_toggle())
+            self.assertTrue(start_entered.wait(1))
+            controller = app._toggle_thread
+            self.assertTrue(app.request_toggle())
+            self.assertIs(app._toggle_thread, controller)
+            release_start.set()
+            self.assertTrue(stop_finished.wait(1))
+
+        self.assertEqual(calls, ["start", "stop"])
+        app.shutdown()
+        self.assertFalse(controller.is_alive())
+
+    def test_pending_stop_does_not_restart_after_slow_start_failure(self):
+        panel = FakePanel()
+        app = vt.VoiceTypingApp(FakeClient(), panel)
+        start_entered = threading.Event()
+        release_start = threading.Event()
+        calls = []
+
+        def slow_failed_start():
+            calls.append("start")
+            with app._lock:
+                app.state = "starting"
+            start_entered.set()
+            release_start.wait(1)
+            with app._lock:
+                app.state = "idle"
+            return False
+
+        app.start_recording = slow_failed_start
+        with mock.patch.object(vt, "TOGGLE_DEBOUNCE_SECONDS", 0):
+            self.assertTrue(app.request_toggle())
+            self.assertTrue(start_entered.wait(1))
+            self.assertTrue(app.request_toggle())
+            release_start.set()
+            with app._toggle_condition:
+                self.assertTrue(
+                    app._toggle_condition.wait_for(
+                        lambda: app._toggle_active_action is None
+                        and app._toggle_pending_action is None,
+                        timeout=1,
+                    )
+                )
+
+        self.assertEqual(calls, ["start"])
+        self.assertEqual(app.state, "idle")
+        app.shutdown()
+
+    def test_reentrant_request_during_controller_start_uses_one_controller(self):
+        panel = FakePanel()
+        app = vt.VoiceTypingApp(FakeClient(), panel)
+        original_start = threading.Thread.start
+        controller_starts = []
+
+        def reentrant_start(thread):
+            if thread.name == "toggle-controller":
+                controller_starts.append(thread)
+                app.request_toggle()
+            return original_start(thread)
+
+        with mock.patch.object(vt, "TOGGLE_DEBOUNCE_SECONDS", 0), mock.patch.object(
+            threading.Thread, "start", reentrant_start
+        ):
+            self.assertTrue(app.request_toggle())
+
+        self.assertEqual(controller_starts, [app._toggle_thread])
+        with app._toggle_condition:
+            self.assertIsNone(app._toggle_pending_action)
+        app.shutdown()
+        self.assertFalse(app._toggle_thread.is_alive())
+
+    def test_shutdown_waits_for_startup_route_cleanup(self):
+        from voicetyping.audio_routing import ActiveInputRoute, AudioSelection
+
+        panel = FakePanel()
+        route_changed = threading.Event()
+        release_activation = threading.Event()
+        route_restored = threading.Event()
+        shutdown_finished = threading.Event()
+
+        class BlockingRouter(vt.SystemAudioRouter):
+            def activate(self, on_route=None):
+                selection = AudioSelection(
+                    21,
+                    "test_input",
+                    "Test microphone",
+                    "Test output",
+                    "test",
+                    "test",
+                )
+                route = ActiveInputRoute(selection, route_restored.set)
+                if on_route is None or not on_route(route):
+                    raise AssertionError("route owner rejected startup")
+
+                def change_route():
+                    route_changed.set()
+                    release_activation.wait(1)
+
+                route._activate(change_route)
+                if route.cancelled:
+                    route.restore()
+                    raise vt.AudioRoutingError("activation cancelled")
+                return route
+
+        app = vt.VoiceTypingApp(
+            FakeClient(),
+            panel,
+            stream_factory=lambda **kwargs: FakeStream(),
+            audio_router=BlockingRouter(),
+        )
+        with mock.patch.object(vt, "TOGGLE_DEBOUNCE_SECONDS", 0):
+            self.assertTrue(app.request_toggle())
+        self.assertTrue(route_changed.wait(1))
+        controller = app._toggle_thread
+
+        def shut_down():
+            app.shutdown()
+            shutdown_finished.set()
+
+        shutdown_thread = threading.Thread(target=shut_down)
+        shutdown_thread.start()
+        self.assertFalse(shutdown_finished.wait(0.05))
+        release_activation.set()
+        self.assertTrue(shutdown_finished.wait(1))
+        shutdown_thread.join(1)
+
+        self.assertTrue(route_restored.is_set())
+        self.assertFalse(controller.is_alive())
+        self.assertEqual(app.state, "shutting_down")
+
+    def test_shutdown_restores_route_without_waiting_forever_for_stuck_stream(self):
+        panel = FakePanel()
+        stream_start_entered = threading.Event()
+        release_stream = threading.Event()
+        route_restored = threading.Event()
+
+        class BlockingStream(FakeStream):
+            def start(self):
+                stream_start_entered.set()
+                release_stream.wait(2)
+                super().start()
+
+        route = SimpleNamespace(
+            selection=SimpleNamespace(
+                source_description="Test microphone",
+                reason="test",
+                device_api="test",
+            ),
+            restore=route_restored.set,
+        )
+        router = SimpleNamespace(activate=lambda: route)
+        app = vt.VoiceTypingApp(
+            FakeClient(),
+            panel,
+            stream_factory=lambda **kwargs: BlockingStream(),
+            audio_router=router,
+        )
+        with mock.patch.object(vt, "TOGGLE_DEBOUNCE_SECONDS", 0):
+            self.assertTrue(app.request_toggle())
+        self.assertTrue(stream_start_entered.wait(1))
+        controller = app._toggle_thread
+
+        try:
+            with mock.patch.object(vt, "TOGGLE_SHUTDOWN_JOIN_SECONDS", 0.05):
+                app.shutdown()
+
+            self.assertTrue(route_restored.is_set())
+            self.assertTrue(panel.closed)
+            self.assertTrue(controller.is_alive())
+        finally:
+            release_stream.set()
+            controller.join(1)
+
+        self.assertFalse(controller.is_alive())
+        self.assertEqual(app.state, "shutting_down")
+
     def test_success_uses_transcription_model_and_copies_once(self):
         panel = FakePanel()
         client = FakeClient(text="  Salam dünya.  ")
@@ -556,6 +861,9 @@ class AppStateTests(unittest.TestCase):
 
         copy.assert_called_once_with("Salam dünya.")
         self.assertEqual(client.calls[0]["model"], vt.TRANSCRIPTION_MODEL)
+        transcription_config = client.calls[0]["config"].audio_transcription_config
+        self.assertEqual(transcription_config.language_codes, ["az-AZ", "en-US"])
+        self.assertIn("fallback", transcription_config.custom_vocabulary)
         self.assertEqual(app.last_text, "Salam dünya.")
         self.assertEqual(app.state, "idle")
 
@@ -588,6 +896,7 @@ class AppStateTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0]["model"], vt.TRANSCRIPTION_MODEL)
         self.assertEqual(calls[1]["model"], vt.FALLBACK_MODELS[0])
+        self.assertIn("code-switching", calls[1]["contents"][0])
         self.assertEqual(app.last_text, "Salam fallback.")
         self.assertEqual(app.state, "idle")
 

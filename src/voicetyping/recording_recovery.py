@@ -1,0 +1,275 @@
+"""Private durable storage for recordings awaiting transcription recovery."""
+
+from __future__ import annotations
+
+import os
+import queue
+import struct
+import subprocess
+import threading
+import time
+import wave
+from pathlib import Path
+
+DEFAULT_RECOVERY_DIR = Path(os.environ.get(
+    "VOICETYPING_RECOVERY_DIR", Path.home() / "Documents" / "VoiceTyping Recovery"
+))
+SAMPLE_RATE = 16_000
+MIN_SAMPLE_RATE = 1_000
+MAX_SAMPLE_RATE = 768_000
+
+
+class RecoveryStore:
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = Path(root) if root is not None else DEFAULT_RECOVERY_DIR
+
+    def ensure_directory(self) -> Path:
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.root.chmod(0o700)
+        return self.root
+
+    def save_audio(self, wav_bytes: bytes) -> Path:
+        if not wav_bytes:
+            raise ValueError("wav_bytes must not be empty")
+        root = self.ensure_directory()
+        return self._atomic_write(root / f"{time.time_ns()}.pending.wav", wav_bytes)
+
+    def start_spool(self, sample_rate: float = SAMPLE_RATE) -> "RecordingSpool":
+        sample_rate = self._valid_sample_rate(sample_rate)
+        return RecordingSpool(
+            self.ensure_directory()
+            / f"{time.time_ns()}.{sample_rate}.recording.pcm"
+        )
+
+    def recover_incomplete_spools(self) -> list[Path]:
+        if not self.root.exists():
+            return []
+        self.ensure_directory()
+        recovered = self._recover_stale_temporaries()
+        for raw_path in sorted(self.root.glob("*.recording.pcm")):
+            try:
+                stem = raw_path.name.removesuffix(".recording.pcm")
+                name_parts = stem.rsplit(".", 1)
+                sample_rate = (
+                    self._valid_sample_rate(name_parts[1])
+                    if len(name_parts) == 2 and name_parts[1].isdigit()
+                    else SAMPLE_RATE
+                )
+                recovered.append(self._convert_raw_to_pending(raw_path, sample_rate))
+            except (OSError, OverflowError, ValueError, struct.error, wave.Error):
+                continue
+        return recovered
+
+    @staticmethod
+    def _valid_sample_rate(value: float | str) -> int:
+        try:
+            sample_rate = round(float(value))
+        except (OverflowError, TypeError, ValueError):
+            return SAMPLE_RATE
+        if not MIN_SAMPLE_RATE <= sample_rate <= MAX_SAMPLE_RATE:
+            return SAMPLE_RATE
+        return sample_rate
+
+    def _recover_stale_temporaries(self) -> list[Path]:
+        """Promote complete staging WAVs left by a terminated app process."""
+        recovered = []
+        for temporary in sorted(self.root.glob(".*.pending.wav.*.tmp")):
+            if temporary.is_symlink() or not temporary.is_file():
+                continue
+            parsed = self._parse_temporary_name(temporary.name)
+            if parsed is None:
+                continue
+            destination_name, owner_pid = parsed
+            # A temporary file owned by a live process may still be in flight.
+            if self._pid_is_alive(owner_pid):
+                continue
+            destination = self.root / destination_name
+            raw_path = self.root / (
+                destination_name.removesuffix(".pending.wav") + ".recording.pcm"
+            )
+            try:
+                if destination.exists() or raw_path.exists():
+                    temporary.unlink()
+                    self._sync_directory(self.root)
+                    continue
+                if not self._is_complete_wav(temporary):
+                    temporary.unlink()
+                    self._sync_directory(self.root)
+                    continue
+                os.chmod(temporary, 0o600)
+                with temporary.open("rb") as handle:
+                    os.fsync(handle.fileno())
+                os.replace(temporary, destination)
+                self._sync_directory(self.root)
+                recovered.append(destination)
+            except OSError:
+                # Preserve unreadable or otherwise uncertain data for a later run.
+                continue
+        return recovered
+
+    @staticmethod
+    def _parse_temporary_name(name: str) -> tuple[str, int] | None:
+        if not name.startswith(".") or not name.endswith(".tmp"):
+            return None
+        body = name[1:-4]
+        try:
+            destination_name, pid_text = body.rsplit(".", 1)
+        except ValueError:
+            return None
+        if not destination_name.endswith(".pending.wav") or not pid_text.isdigit():
+            return None
+        owner_pid = int(pid_text)
+        if owner_pid <= 0:
+            return None
+        return destination_name, owner_pid
+
+    @staticmethod
+    def _pid_is_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, OverflowError):
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return True
+        return True
+
+    @staticmethod
+    def _is_complete_wav(path: Path) -> bool:
+        try:
+            with wave.open(str(path), "rb") as audio:
+                channels = audio.getnchannels()
+                sample_width = audio.getsampwidth()
+                sample_rate = audio.getframerate()
+                frame_count = audio.getnframes()
+                if min(channels, sample_width, sample_rate, frame_count) <= 0:
+                    return False
+                audio.setpos(frame_count - 1)
+                return len(audio.readframes(1)) == channels * sample_width
+        except (EOFError, wave.Error):
+            return False
+
+    def pending_files(self) -> list[Path]:
+        return sorted(self.root.glob("*.pending.wav")) if self.root.exists() else []
+
+    def discard(self, pending_audio: Path | None) -> None:
+        if pending_audio is None:
+            return
+        try:
+            Path(pending_audio).unlink(missing_ok=True)
+            self._sync_directory(Path(pending_audio).parent)
+        except OSError:
+            pass
+
+    def open_directory(self) -> bool:
+        directory = self.ensure_directory()
+        try:
+            subprocess.Popen(["xdg-open", str(directory)], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            return False
+        return True
+
+    def _convert_raw_to_pending(self, raw_path: Path, sample_rate: float) -> Path:
+        sample_rate = self._valid_sample_rate(sample_rate)
+        destination = raw_path.with_name(raw_path.name.removesuffix(".recording.pcm") + ".pending.wav")
+        temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+        try:
+            with wave.open(str(temporary), "wb") as output, raw_path.open("rb") as source:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(sample_rate)
+                while block := source.read(256 * 1024):
+                    output.writeframesraw(block)
+            os.chmod(temporary, 0o600)
+            with temporary.open("rb") as handle:
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+            self._sync_directory(destination.parent)
+            raw_path.unlink(missing_ok=True)
+            self._sync_directory(destination.parent)
+            return destination
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _atomic_write(destination: Path, data: bytes) -> Path:
+        temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = -1
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+            RecoveryStore._sync_directory(destination.parent)
+            return destination
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _sync_directory(directory: Path) -> None:
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+class RecordingSpool:
+    """Queue PCM from the audio callback; write it on a dedicated thread."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._queue: queue.SimpleQueue[bytes | None] = queue.SimpleQueue()
+        self._closed = threading.Event()
+        self._error: Exception | None = None
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        self._thread = threading.Thread(target=self._write_loop, args=(descriptor,),
+                                        daemon=True, name="recording-spool")
+        self._thread.start()
+
+    def offer(self, pcm_bytes: bytes) -> None:
+        if pcm_bytes and not self._closed.is_set():
+            self._queue.put(pcm_bytes)
+
+    def finish(self) -> Path:
+        if not self._closed.is_set():
+            self._closed.set()
+            self._queue.put(None)
+        self._thread.join(timeout=5)
+        if self._thread.is_alive():
+            raise TimeoutError("recording spool did not finish")
+        if self._error:
+            raise self._error
+        return self.path
+
+    def preserve(self, store: RecoveryStore, sample_rate: float = SAMPLE_RATE) -> Path:
+        self.finish()
+        return store._convert_raw_to_pending(self.path, sample_rate)
+
+    def discard(self) -> None:
+        try:
+            self.finish()
+        except Exception:
+            pass
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _write_loop(self, descriptor: int) -> None:
+        try:
+            with os.fdopen(descriptor, "wb", buffering=0) as handle:
+                while True:
+                    chunk = self._queue.get()
+                    if chunk is None:
+                        break
+                    handle.write(chunk)
+                    os.fsync(handle.fileno())
+        except Exception as error:
+            self._error = error

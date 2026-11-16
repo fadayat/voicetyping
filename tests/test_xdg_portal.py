@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from xdg_portal import (
+from voicetyping.xdg_portal import (
     GLOBAL_SHORTCUTS_INTERFACE,
     KEYBOARD_DEVICE,
     REMOTE_DESKTOP_INTERFACE,
@@ -294,7 +294,7 @@ class RemoteDesktopKeyboardTests(unittest.TestCase):
         self.assertEqual(client.requests[1][0:2], (REMOTE_DESKTOP_INTERFACE, "SelectDevices"))
         self.assertEqual(client.requests[1][3]["types"].value, KEYBOARD_DEVICE)
 
-        with mock.patch("xdg_portal.time.sleep"):
+        with mock.patch("voicetyping.xdg_portal.time.sleep"):
             keyboard.paste(terminal=True)
         events = [call[2].value[2:] for call in client.calls]
         self.assertEqual(events, [
@@ -334,7 +334,7 @@ class RemoteDesktopKeyboardTests(unittest.TestCase):
             return original_call(interface, method, parameters, object_path=object_path)
 
         client.call = fail_release
-        with mock.patch("xdg_portal.time.sleep"), self.assertRaisesRegex(
+        with mock.patch("voicetyping.xdg_portal.time.sleep"), self.assertRaisesRegex(
             RuntimeError, "key release failed"
         ):
             keyboard.paste()

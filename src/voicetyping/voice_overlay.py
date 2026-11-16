@@ -17,7 +17,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
-from voice_visual import VoiceVisual
+from .voice_visual import VoiceVisual
 
 
 class VoiceOverlay:
@@ -123,7 +123,9 @@ class VoiceOverlay:
             return False
         if action == "show":
             state, hide_ms = command[1:3]
-            if state == "ready" and self.visible and self.state in ("recording", "transcribing"):
+            if state == "ready" and self.visible and self.state in (
+                "starting", "recording", "transcribing"
+            ):
                 return True
             if state != self.state or not self.visible:
                 self.previous_state = self.state
@@ -134,7 +136,7 @@ class VoiceOverlay:
                 self.audio_at = now
             self.exit_at = None
             self.hide_at = now + hide_ms / 1000 if hide_ms else None
-            if state in ("recording", "transcribing"):
+            if state in ("starting", "recording", "transcribing"):
                 self.hide_at = None
             elif state == "copied":
                 self.hide_at = now + 0.30

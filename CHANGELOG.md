@@ -1,5 +1,43 @@
 # Changelog
 
+## 2.3.0
+
+### Added
+
+- Private recovery for recordings whose transcription fails. Pending audio uses
+  owner-only permissions and can be retried after connectivity returns.
+- PipeWire microphone selection based on the active output device, with route
+  restoration after recording.
+- One installable Python package used by developer runs, the AppImage, and the
+  Ubuntu package.
+- A release harness for source, wheel, AppImage, and `.deb` checks, plus CI for
+  manual artifact builds and tag-triggered draft releases.
+
+### Fixed
+
+- Legacy crash spools without an encoded sample rate now recover at 16 kHz
+  instead of interpreting their timestamp as an invalid WAV sample rate.
+- Developer environments use the distribution Python so GTK, Cairo, and
+  GObject modules installed by the system package manager remain available.
+- Rapid shortcut and tray presses are serialized through one bounded toggle
+  controller, while X11 auto-repeat is ignored until the key is released.
+- Microphone preparation now has immediate visual feedback, and repeated input
+  during transcription no longer churns or strands the overlay state.
+- Azerbaijani and English are hinted together, while Live and batch
+  transcription share configurable vocabulary for embedded technical terms.
+- Muted PipeWire headset microphones are temporarily unmuted only for an
+  explicit recording, then their prior mute state is restored.
+
+### Privacy
+
+- Successful recordings are not archived. Failed recordings may remain in the
+  private recovery folder until retry succeeds or the user deletes them.
+- A successful recovery retry removes its audio and queues every recovered text
+  in application memory until the user copies it from the tray.
+- Complete temporary WAV files left by an interrupted atomic save are promoted
+  to pending recovery files on the next start; invalid staging files are cleaned.
+- See [PRIVACY.md](PRIVACY.md).
+
 ## 2.2.0
 
 ### Improved

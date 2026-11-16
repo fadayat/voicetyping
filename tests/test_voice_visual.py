@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from voice_visual import VoiceVisual
+from voicetyping.voice_visual import VoiceVisual
 
 
 class VoiceVisualTests(unittest.TestCase):

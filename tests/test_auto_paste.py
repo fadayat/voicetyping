@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import auto_paste as ap
+from voicetyping import auto_paste as ap
 
 
 class PasteShortcutTests(unittest.TestCase):
@@ -95,12 +95,12 @@ class PasteShortcutTests(unittest.TestCase):
 
 class PortalAutomaticPasteTests(unittest.TestCase):
     def test_failed_portal_paste_disables_backend_for_future_transcriptions(self):
-        from auto_paste import PortalAutomaticPaste
+        from voicetyping.auto_paste import PortalAutomaticPaste
 
         keyboard = mock.Mock()
         keyboard.paste.side_effect = RuntimeError("portal session closed")
         action = PortalAutomaticPaste(keyboard)
-        with mock.patch("auto_paste.is_terminal_focused", return_value=False):
+        with mock.patch("voicetyping.auto_paste.is_terminal_focused", return_value=False):
             prepared = action.prepare()
             with self.assertRaisesRegex(RuntimeError, "portal session closed"):
                 prepared()

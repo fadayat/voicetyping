@@ -4,6 +4,7 @@
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -28,7 +29,22 @@ def is_voicetyping_process(pid):
         arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
     except OSError:
         return False
-    return any(Path(os.fsdecode(argument)).name == "voicetyping.py" for argument in arguments if argument)
+    decoded = [os.fsdecode(argument) for argument in arguments if argument]
+    if not decoded:
+        return False
+    executable = Path(decoded[0]).name
+    if executable == "voicetyping":
+        return True
+    if not executable.startswith("python") or len(decoded) < 2:
+        return False
+    command = decoded[1]
+    if Path(command).name in {"voicetyping.py", "voicetyping"}:
+        return True
+    return (
+        command == "-m"
+        and len(decoded) > 2
+        and decoded[2] in {"voicetyping.app", "voicetyping"}
+    )
 
 
 def valid_pid():
@@ -58,7 +74,15 @@ def start_and_wait_for_pid():
         time.sleep(POLL_INTERVAL_SECONDS)
 
 
-def main():
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ["--help"]:
+        print("usage: voicetyping-toggle")
+        return 0
+    if argv:
+        print("usage: voicetyping-toggle", file=sys.stderr)
+        return 2
+
     pid = valid_pid()
     if not pid:
         pid = start_and_wait_for_pid()

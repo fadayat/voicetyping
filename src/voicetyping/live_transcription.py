@@ -46,6 +46,7 @@ class LiveTranscriber:
         receive_timeout: float = 4.0,
         poll_interval: float = 0.005,
         language_codes: Optional[Sequence[str]] = None,
+        custom_vocabulary: Optional[Sequence[str]] = None,
     ) -> None:
         if not api_key:
             raise ValueError("api_key is required")
@@ -61,6 +62,14 @@ class LiveTranscriber:
             isinstance(code, str) and code for code in language_codes
         ):
             raise ValueError("language_codes must contain non-empty strings")
+        if isinstance(custom_vocabulary, (str, bytes)):
+            raise TypeError("custom_vocabulary must be a sequence of phrases")
+        if custom_vocabulary is not None and not all(
+            isinstance(phrase, str) and phrase for phrase in custom_vocabulary
+        ):
+            raise ValueError("custom_vocabulary must contain non-empty strings")
+        if custom_vocabulary is not None and len(custom_vocabulary) > 1000:
+            raise ValueError("custom_vocabulary supports at most 1000 phrases")
 
         self._api_key = api_key
         self._client_factory = client_factory or (
@@ -73,6 +82,9 @@ class LiveTranscriber:
         self._poll_interval = poll_interval
         self._language_codes = (
             tuple(language_codes) if language_codes is not None else None
+        )
+        self._custom_vocabulary = (
+            tuple(custom_vocabulary) if custom_vocabulary is not None else None
         )
 
         self._lock = threading.Lock()
@@ -253,7 +265,12 @@ class LiveTranscriber:
                         list(self._language_codes)
                         if self._language_codes is not None
                         else []
-                    )
+                    ),
+                    custom_vocabulary=(
+                        list(self._custom_vocabulary)
+                        if self._custom_vocabulary is not None
+                        else []
+                    ),
                 ),
                 realtime_input_config=types.RealtimeInputConfig(
                     automatic_activity_detection=types.AutomaticActivityDetection(

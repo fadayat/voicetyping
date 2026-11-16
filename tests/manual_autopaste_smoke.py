@@ -19,7 +19,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 import pyperclip
 
-from auto_paste import AutomaticPaste
+from voicetyping.auto_paste import AutomaticPaste
 
 
 def main():

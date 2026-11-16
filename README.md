@@ -8,7 +8,6 @@ Press `F8`, speak, then press it again. VoiceTyping transcribes the recording
 with Gemini and pastes the final text into the field you kept focused.
 
 [Website](https://voicetyping1.vercel.app/) ·
-[VoiceTyping 2.2.0](https://github.com/fadayat/voicetyping/releases/tag/v2.2.0) ·
 [Changelog](CHANGELOG.md) ·
 [MIT license](LICENSE)
 
@@ -18,13 +17,14 @@ with Gemini and pastes the final text into the field you kept focused.
 
 VoiceTyping is an open-source Linux desktop dictation utility. It streams audio
 while you speak, keeps the complete recording in memory as a fallback, and
-inserts only the finalized transcript.
+inserts only the finalized transcript. Python developer runs, AppImage, and
+Ubuntu packages use the same installable Python package.
 
 ## One shortcut, three steps
 
 | Step | What VoiceTyping does |
 | --- | --- |
-| **1. Capture** | `F8` starts and stops a recording from the default microphone. |
+| **1. Capture** | `F8` starts and stops a recording. On PipeWire, VoiceTyping selects the input for the active output device when available. |
 | **2. Transcribe** | Gemini Live handles the active stream. The complete recording can use batch transcription if Live fails. |
 | **3. Insert** | The final text is copied and pasted with `Ctrl+V`, or `Ctrl+Shift+V` in recognized standalone terminals. |
 
@@ -120,6 +120,21 @@ The floating indicator grows with your voice, flows while the transcript is
 finalized, and disappears when the text is ready. It stays click-through and
 does not take keyboard focus.
 
+Before each recording on PipeWire desktops, VoiceTyping prefers the microphone
+belonging to the active output device. This lets wired, USB, and Bluetooth
+headsets follow the desktop's current output choice. WirePlumber switches a
+Bluetooth headset to its microphone profile for the recording and restores its
+music profile afterward. VoiceTyping stops with a clear warning instead of
+silently using the laptop microphone when an active headset has no input. If
+the selected PipeWire source starts muted, VoiceTyping temporarily unmutes it
+for the explicit recording and restores the previous mute state afterward.
+
+Show the current non-sensitive routing decision without opening the microphone:
+
+```bash
+uv run python voicetyping.py --audio-info
+```
+
 ## Compatibility
 
 | Environment | Behavior |
@@ -137,11 +152,14 @@ animation requires a composited desktop.
 
 ## Privacy and local data
 
-- Audio is sent to Google only during a recording you start. A failed Live
-  session may resend the complete in-memory recording through batch
-  transcription.
-- VoiceTyping does not keep an audio archive and does not log audio, transcript
-  text, or API keys.
+- Audio is sent to Google only for recordings you start. A failed Live session
+  may resend the complete recording through batch transcription, and a saved
+  failed recording may be retried later after the original session has ended.
+- Successful recordings are not archived. If transcription fails, VoiceTyping
+  may temporarily keep a private recovery recording until retry succeeds or
+  you delete it. Successfully recovered texts stay queued in memory until you
+  copy them from the tray or exit. See [PRIVACY.md](PRIVACY.md) for details.
+- VoiceTyping does not log audio, transcript text, or API keys.
 - The saved API key is plain text in
   `~/.config/voicetyping/config.json`, protected with owner-only permissions
   (`0600`). Anyone with access to your local account can read and use it.
@@ -160,7 +178,8 @@ Add optional settings to the existing configuration JSON, then restart the app:
 | `"shortcut": "<Ctrl><Alt>F8"` | `"F8"` | Set the global shortcut. Accepts GNOME markup or plus-separated forms such as `Ctrl+Alt+F8`. |
 | `"auto_paste": false` | `true` | Keep the transcript on the clipboard without sending a paste shortcut. |
 | `"live_transcription": false` | `true` | Use the complete-recording batch path. |
-| `"language_codes": []` | Azerbaijani hint | Let Gemini detect the spoken language automatically. |
+| `"language_codes"` | `["az-AZ", "en-US"]` | Recognize Azerbaijani speech with embedded English words. Use `[]` for unrestricted automatic detection. |
+| `"custom_vocabulary"` | Small developer-term list | Bias recognition toward terms such as `fallback`, `API`, and `GitHub`. A configured list replaces the built-in list; use `[]` to disable it. |
 
 <details>
 <summary>Recording limits and failure behavior</summary>
@@ -182,17 +201,23 @@ Add optional settings to the existing configuration JSON, then restart the app:
 ## Development
 
 ```bash
+uv venv --python "$(command -v python3)" --system-site-packages
 uv sync --locked
-uv run python voicetyping.py
+uv run voicetyping
 uv run python -m unittest discover -s tests
+uv run --locked python scripts/release_harness.py source
 ```
 
-`requirements.txt` is exported from `uv.lock` for package builders. GTK3, Cairo,
-GObject, Tkinter, PortAudio, and clipboard tools remain system dependencies;
-install them with the package manager commands above. The app uses GTK3/Cairo
+Build one wheel with `uv build --wheel --out-dir dist`; release packages consume
+that same wheel. `requirements.txt` is generated with hashes from `uv.lock` for
+package builders. GTK3, Cairo, GObject, Tkinter, PortAudio, and clipboard tools
+remain system dependencies; install them with the package manager commands
+above. The development environment deliberately uses the distribution's
+Python so those desktop modules remain visible. The app uses GTK3/Cairo
 for its transparent indicator, Google GenAI for transcription, and XDG Desktop
 Portals or desktop-specific shortcut and paste backends. See [DESIGN.md](DESIGN.md)
-for the internal design.
+for the internal design, [HARNESS.md](HARNESS.md) for build checks, and
+[PACKAGING_PLAN.md](PACKAGING_PLAN.md) for v2.3 release gates.
 
 On a non-GNOME Wayland desktop, `uv run python tests/manual_wayland_portal_smoke.py`
 checks portal permission, the `F8` binding, and clipboard paste in a focused

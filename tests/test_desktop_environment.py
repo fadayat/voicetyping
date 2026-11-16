@@ -2,7 +2,7 @@
 
 import unittest
 
-from desktop_environment import detect_desktop_environment
+from voicetyping.desktop_environment import detect_desktop_environment
 
 
 class DesktopEnvironmentTests(unittest.TestCase):

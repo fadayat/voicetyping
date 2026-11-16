@@ -53,8 +53,8 @@ def main():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     import numpy as np
     import pyperclip
-    import auto_paste as ap
-    import voicetyping as vt
+    from voicetyping import app as vt
+    from voicetyping import auto_paste as ap
 
     class Client:
         def close(self): pass

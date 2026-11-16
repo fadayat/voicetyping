@@ -3,9 +3,9 @@ set -eu
 
 APPDIR=${APPDIR:?APPDIR is required}
 PYTHON="$APPDIR/usr/bin/python3"
-APPLICATION="$APPDIR/usr/src/voicetyping/voicetyping.py"
 
 if [ "$#" -eq 1 ] && [ "$1" = "--toggle" ]; then
+    [ -n "${APPIMAGE:-}" ] || exit 1
     user_id=$(id -u)
     if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
         RUNTIME_DIR=$XDG_RUNTIME_DIR
@@ -31,11 +31,22 @@ if [ "$#" -eq 1 ] && [ "$1" = "--toggle" ]; then
     esac
 
     proc_cmdline="/proc/$pid/cmdline"
-    if [ ! -r "$proc_cmdline" ]; then
+    proc_environment="/proc/$pid/environ"
+    if [ ! -r "$proc_cmdline" ] || [ ! -r "$proc_environment" ]; then
         exit 1
     fi
     arguments=$(tr '\000' '\n' <"$proc_cmdline" 2>/dev/null) || exit 1
-    if ! printf '%s\n' "$arguments" | grep -Eq '(^|/)voicetyping\.py$'; then
+    environment=$(tr '\000' '\n' <"$proc_environment" 2>/dev/null) || exit 1
+    first_argument=$(printf '%s\n' "$arguments" | sed -n '1p')
+    second_argument=$(printf '%s\n' "$arguments" | sed -n '2p')
+    third_argument=$(printf '%s\n' "$arguments" | sed -n '3p')
+    running_appdir=$(printf '%s\n' "$environment" | sed -n 's/^APPDIR=//p' | sed -n '1p')
+    running_appimage=$(printf '%s\n' "$environment" | sed -n 's/^APPIMAGE=//p' | sed -n '1p')
+    if [ -z "$running_appdir" ] || \
+        [ "$running_appimage" != "$APPIMAGE" ] || \
+        [ "$first_argument" != "$running_appdir/usr/bin/python3" ] || \
+        [ "$second_argument" != "-m" ] || \
+        [ "$third_argument" != "voicetyping.app" ]; then
         exit 1
     fi
 
@@ -48,4 +59,4 @@ if [ "$#" -eq 1 ] && [ "$1" = "--toggle" ]; then
     exit $?
 fi
 
-exec "$PYTHON" "$APPLICATION" "$@"
+exec "$PYTHON" -m voicetyping.app "$@"

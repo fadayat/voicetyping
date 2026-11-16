@@ -7,7 +7,7 @@ from unittest import mock
 
 import numpy as np
 
-import voicetyping as vt
+from voicetyping import app as vt
 
 
 class FakePanel:
