@@ -22,7 +22,8 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 | 13. Bootstrap pre-merge artifacts | Complete | GitHub cannot dispatch a new workflow before it reaches the default branch. The read-only artifact workflow now also accepts an explicit `build-release-artifacts` PR label, without enabling release publication. | `de54b89` | Push this checkpoint, apply the artifact label to PR #5, and inspect all resulting jobs and packages. |
 | 14. Fix AppRun v2 bootstrap | Complete | Artifact run `43822116243` passed source, wheel, and `.deb`, but AppRun v2 rejected the shell launcher while selecting an ELF architecture. The recipe now uses bundled Python for builder setup, retains the launcher as the final runtime entry point, and passes all 210 local source tests. | `8b0eec5` | Push the fix, retrigger the label gate, and inspect the rebuilt artifacts. |
 | 15. Validate review artifacts | Automated checks complete; interactive smoke pending | Run `43822778205` passes source, wheel, AppImage, and Ubuntu `.deb` validation while skipping release publication. All three downloaded checksums pass; the AppImage also passes the Fedora artifact harness. | `9436f09` | Start the downloaded AppImage and complete the user-visible desktop smoke test before merging or tagging. |
-| 16. Launch AppImage candidate | Interactive smoke in progress | The developer service is stopped, the downloaded AppImage runs as `voicetyping-appimage-v2_3.service` without restarts, its tray/overlay processes are active, and the GNOME F8 command points to this exact image. | `2837496` | Test F8 controls, Buds2 Pro capture, mixed-language terms, and offline recovery; then record the results before any merge or tag. |
+| 16. Launch AppImage candidate | Basic user smoke complete; extended cases pending | The developer service is stopped, the downloaded AppImage runs as `voicetyping-appimage-v2_3.service` without restarts, and the user confirms the candidate works interactively. | `2837496` | Keep the extended rapid-control, mixed-language, and recovery cases visible as post-merge release gates. |
+| 17. Approve PR merge | Complete | The user explicitly authorizes merging PR #5 after the downloaded AppImage works locally. The latest source-and-wheel check and the full candidate artifact run pass. | `a7e0d3c` | Push this approval checkpoint, mark PR #5 ready, merge it into `main`, and record the resulting merge commit. |
 
 ## Decisions
 
@@ -154,8 +155,9 @@ or release action is authorized.
 - [ ] Complete the interactive AppImage desktop smoke test before any tag or
   draft release.
 
-Next step: start the downloaded AppImage for the interactive Fedora smoke test.
-No tag, draft release, merge, or publication action is authorized.
+Next step: merge the user-approved PR while keeping the remaining interactive
+release cases visible. No tag, draft release, or publication action is
+authorized.
 
 ## Artifact workflow bootstrap checkpoint
 
@@ -179,8 +181,9 @@ No tag, draft release, merge, or publication action is authorized.
 - [ ] Complete tray, F8, headset, mixed-language, offline-recovery, shortcut,
   and autostart smoke tests interactively.
 
-Next step: run the downloaded AppImage interactively. No tag, draft release,
-merge, or publication action is authorized.
+Next step: merge the user-approved PR while keeping the extended interactive
+cases as release gates. No tag, draft release, or publication action is
+authorized.
 
 ## AppImage desktop smoke checkpoint
 
@@ -190,6 +193,8 @@ merge, or publication action is authorized.
   `--toggle` command.
 - [x] Start `voicetyping-appimage-v2_3.service`; confirm the application and
   overlay processes are active with zero service restarts.
+- [x] Receive the user's confirmation that the downloaded AppImage works in
+  the live desktop session.
 - [ ] Verify normal F8 start/stop, quick double press, held F8, tray toggle, and
   input while transcription is processing.
 - [ ] Verify Buds2 Pro capture and restoration of its original mute state.
@@ -200,4 +205,20 @@ merge, or publication action is authorized.
 
 Next step: perform the live F8, headset, and mixed-language checks in the
 running AppImage. The old installed v2.2.0 login autostart remains unchanged;
-no merge, tag, draft release, or publication action is authorized.
+PR #5 merge is authorized, but no tag, draft release, or publication action is
+authorized.
+
+## Merge approval checkpoint
+
+- [x] Confirm PR #5 is cleanly mergeable into `main`.
+- [x] Pass the latest PR source-and-wheel check at commit `a7e0d3c`.
+- [x] Pass wheel, AppImage, and Ubuntu `.deb` jobs in artifact run
+  `43822778205` and keep draft-release creation skipped.
+- [x] Confirm the downloaded AppImage remains active with zero service
+  restarts; receive the user's live success confirmation.
+- [x] Receive explicit user authorization to merge PR #5.
+- [ ] Mark the draft PR ready and merge it without creating a tag or release.
+- [ ] Record the merge commit and verify the `main` branch CI result.
+
+Next step: merge PR #5 into `main`, then create the required post-merge plan
+checkpoint. No tag, draft release, or publication action is authorized.
