@@ -13,10 +13,11 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 | 4. Make wheel the source for all installers | Complete | `uv.lock` and the hash-pinned export agree. `install.sh`, AppImage, and `.deb` now validate and install one supplied wheel; the isolated installer passed twice while preserving two rollback releases. | `3a6084f` | Validate the release harness and finish the privacy, README, and changelog documentation. |
 | 5. Add release harness and documentation | Complete | The isolated source and wheel harnesses pass, cover every packaged module and both entry points, and verify the installer twice without reading the user's app state. README, changelog, privacy, metainfo, and manual smoke steps describe v2.3 behavior. | `5b1b3a5` | Validate CI syntax and make PR, manual-artifact, and tag workflows consume the same tested wheel. |
 | 6. Add CI and draft-release automation | Complete | PR/main runs source and wheel gates. Manual runs build AppImage and `.deb` from the tested wheel without publishing. Matching `v*` tags run both artifact harnesses, create checksums and `.zsync`, then prepare a draft release only. | `f505c9d` | Run the final local gates and leave desktop artifact smoke tests pending until CI produces release candidates. |
-| 7. Release gates | Developer smoke in progress; package rerun pending | The source harness passes 210 tests. A real Fedora developer launch uses system GTK/Cairo, safely migrates legacy crash spools, and now handles rapid controls, mixed-language terms, and initially muted headset sources. Earlier wheel and Ubuntu `.deb` gates passed, but must be repeated after the latest runtime fixes. | `5d85ef1` | Restart the developer runtime and smoke-test the Buds2 Pro route plus mixed Azerbaijani/English transcription; then rebuild and revalidate the wheel and `.deb` before any authorized push or AppImage CI run. |
+| 7. Release gates | Review branch pushed; package rerun pending | The source harness passes 210 tests. Fedora developer smoke confirms the Buds2 Pro route records successfully and restores its prior mute state. Earlier wheel and Ubuntu `.deb` gates passed, but must be repeated after the latest runtime fixes. | `5d85ef1` | Verify mixed Azerbaijani/English transcription, then run PR and artifact CI before any tag or release action. |
 | 8. Stabilize rapid controls | Automated checks complete; live X11 smoke pending | Shortcut, tray, signal, and portal requests use one bounded controller. X11 repeat pairs are filtered, startup feedback is immediate, and provisional audio routes are restored safely during shutdown. | `4d3aaab` | Run the fixed developer source and verify that rapid or held F8 input cannot strand the tray icon or overlay. |
 | 9. Preserve mixed-language terms | Developer runtime active; live speech result pending | Azerbaijani and English hints plus configurable technical vocabulary now reach both Live and batch transcription. Generic fallback prompts preserve code-switching. | `d551ea0` | Verify embedded terms such as `fallback`, `API`, and `GitHub` in Azerbaijani sentences. |
-| 10. Restore muted headset capture | Persistent developer service active; live recording pending | PipeWire sources that begin muted are temporarily unmuted only for an explicit recording, then restored on stop, error, or shutdown. The real Buds2 Pro route passed an unmute/restore probe. | `5d85ef1` | Verify that Buds2 Pro captures a complete spoken recording and returns to its prior mute state afterward. |
+| 10. Restore muted headset capture | Complete | PipeWire sources that begin muted are temporarily unmuted only for an explicit recording, then restored on stop, error, or shutdown. The user confirmed a real Buds2 Pro recording and the source returned to `MUTED`. | `5d85ef1` | Keep this behavior in the wheel, `.deb`, and AppImage artifact smoke tests. |
+| 11. Publish review branch | Complete | `feat/v2.3-unified` is available on `origin` with all v2.3 source, tests, documentation, and local checkpoints. | `4d1cd65` | Create or review a pull request, then explicitly authorize the manual AppImage/`.deb` artifact workflow. |
 
 ## Decisions
 
@@ -90,7 +91,8 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 - [ ] Rebuild and rerun wheel and Ubuntu `.deb` gates after the live smoke test.
 
 Next step: launch the fixed developer source for the manual rapid-control smoke
-test. No push, tag, AppImage CI run, or release action is authorized yet.
+test. The review branch is on `origin`; no pull request, workflow run, tag, or
+release action is authorized yet.
 
 ## Mixed-language checkpoint
 
@@ -109,8 +111,9 @@ test. No push, tag, AppImage CI run, or release action is authorized yet.
   `GitHub`.
 - [ ] Rebuild and rerun wheel and Ubuntu `.deb` gates after the live smoke test.
 
-Next step: launch the fixed developer source for the mixed-language speech
-smoke test. No push, tag, AppImage CI run, or release action is authorized yet.
+Next step: run the mixed-language speech smoke test from the active developer
+service. The review branch is on `origin`; no pull request, workflow run, tag,
+or release action is authorized yet.
 
 ## Muted-headset checkpoint
 
@@ -124,10 +127,24 @@ smoke test. No push, tag, AppImage CI run, or release action is authorized yet.
 - [x] Pass 80 focused routing/lifecycle tests and all 210 offline source tests.
 - [x] Run commit `5d85ef1` from a persistent local developer environment and
   verify the real muted Buds2 Pro route becomes unmuted, then muted again.
-- [ ] Complete a real Buds2 Pro recording containing `fallback`, `API`, and
-  `GitHub`.
+- [x] Complete a real Buds2 Pro recording and confirm the source returns to its
+  original `MUTED` state afterward.
+- [ ] Verify `fallback`, `API`, and `GitHub` inside Azerbaijani speech.
 - [ ] Rebuild and rerun wheel and Ubuntu `.deb` gates after the live smoke test.
 
-Next step: restart the developer source, verify that the muted Buds2 Pro source
-records successfully, and confirm its mute state is restored afterward. No
-push, tag, AppImage CI run, or release action is authorized yet.
+Next step: keep the confirmed headset behavior in the rebuilt wheel, `.deb`,
+and AppImage checks. The review branch is on `origin`; no pull request,
+workflow run, tag, or release action is authorized yet.
+
+## Remote branch checkpoint
+
+- [x] Push `feat/v2.3-unified` to `origin` after 210 offline tests and the
+  user-confirmed Buds2 Pro recording smoke test.
+- [ ] Open or review the pull request into `main`.
+- [ ] Run the manual AppImage and Ubuntu `.deb` workflow from the review branch.
+- [ ] Download and smoke-test both workflow artifacts before any tag or draft
+  release.
+
+Next step: verify the remaining mixed-language speech case, then obtain explicit
+authorization for the pull request or manual artifact workflow. No tag, draft
+release, or publication action is authorized yet.
