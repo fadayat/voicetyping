@@ -19,6 +19,7 @@ AppImage builds, and Ubuntu packages must install the same wheel.
 | 10. Restore muted headset capture | Complete | PipeWire sources that begin muted are temporarily unmuted only for an explicit recording, then restored on stop, error, or shutdown. The user confirmed a real Buds2 Pro recording and the source returned to `MUTED`. | `5d85ef1` | Keep this behavior in the wheel, `.deb`, and AppImage artifact smoke tests. |
 | 11. Publish review branch | Complete | `feat/v2.3-unified` is available on `origin` with all v2.3 source, tests, documentation, and local checkpoints. | `4d1cd65` | Open a draft pull request for CI and review. |
 | 12. Open review pull request | Complete | Draft PR #5 targets `main` from `feat/v2.3-unified`; its source-and-wheel check started automatically. | `feadc54` | Push this checkpoint, then run the authorized manual AppImage/`.deb` workflow from the same branch. |
+| 13. Bootstrap pre-merge artifacts | Complete | GitHub cannot dispatch a new workflow before it reaches the default branch. The read-only artifact workflow now also accepts an explicit `build-release-artifacts` PR label, without enabling release publication. | `de54b89` | Push this checkpoint, apply the artifact label to PR #5, and inspect all resulting jobs and packages. |
 
 ## Decisions
 
@@ -150,3 +151,18 @@ or release action is authorized.
 Next step: push this PR checkpoint, then run the authorized manual artifact
 workflow and inspect its AppImage and `.deb` outputs. No tag, draft release, or
 publication action is authorized.
+
+## Artifact workflow bootstrap checkpoint
+
+- [x] Confirm the initial `workflow_dispatch` request fails with HTTP 404
+  because `release-artifacts.yml` is not yet present on the default branch.
+- [x] Keep `workflow_dispatch` for normal post-merge manual builds.
+- [x] Add a read-only PR `labeled` trigger gated by the exact
+  `build-release-artifacts` label.
+- [x] Keep draft-release creation disabled for the PR-label path.
+- [ ] Push the checkpoint and apply the label to draft PR #5.
+- [ ] Wait for wheel, AppImage, and `.deb` validation, then download and inspect
+  the uploaded artifacts.
+
+Next step: apply `build-release-artifacts` to PR #5 after this checkpoint is on
+the remote branch. No tag, draft release, or publication action is authorized.

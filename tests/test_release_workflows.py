@@ -24,6 +24,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
         self.assertIn("workflow_dispatch:", workflow)
         self.assertNotIn("publish_draft", manual_trigger)
+        self.assertIn("types: [labeled]", workflow)
+        self.assertIn(
+            "github.event.label.name == 'build-release-artifacts'", workflow
+        )
         self.assertIn("name: voicetyping-wheel", workflow)
         self.assertIn("VOICETYPING_WHEEL", workflow)
         self.assertIn("inputs.publish_draft == true", workflow)
