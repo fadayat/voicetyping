@@ -26,7 +26,8 @@ if (Test-Path $runKeyPath) {
     }
 }
 
-$smokeRoot = Join-Path $env:TEMP ("voicetyping-installer-smoke-" + [guid]::NewGuid().ToString('N'))
+$localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+$smokeRoot = Join-Path $localAppData ("voicetyping-installer-smoke-" + [guid]::NewGuid().ToString('N'))
 $installDir = Join-Path $smokeRoot 'App'
 $selfTestReport = Join-Path $smokeRoot 'INSTALLED_SELFTEST.json'
 $mutexReadyFile = Join-Path $smokeRoot 'mutex.ready'
