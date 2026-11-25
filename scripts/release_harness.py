@@ -22,6 +22,7 @@ PACKAGE_MODULES = (
     "app",
     "audio_routing",
     "auto_paste",
+    "core",
     "desktop_environment",
     "desktop_integration",
     "live_transcription",
@@ -157,6 +158,10 @@ def source_checks(_args: argparse.Namespace) -> None:
         )
         run(
             ["uv", "run", "--locked", "python", "-m", "unittest", "discover", "-s", "tests"],
+            env=environment,
+        )
+        run(
+            ["uv", "run", "--locked", "python", "-m", "unittest", "discover", "-s", "tests/windows"],
             env=environment,
         )
 

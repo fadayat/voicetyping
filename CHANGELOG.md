@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Windows 10/11 x64 desktop support with a native global shortcut, tray and
+  settings UI, guarded automatic paste, startup control, and Credential Manager
+  storage for the Gemini API key.
+- A PyInstaller ZIP build with packaged self-test, optional real Gemini smoke
+  test, dependency manifest, third-party notices, and SHA-256 checksum.
+- Windows CI alongside the existing Linux source, AppImage, and Ubuntu package
+  checks.
+
+### Changed
+
+- Linux and Windows now share audio validation, resampling, Gemini batch
+  transcription, Live transcription, and crash-recovery storage logic.
+
 ## 2.3.0
 
 ### Added

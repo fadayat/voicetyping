@@ -8,7 +8,7 @@ on:
   workflow_call:
     inputs:
       publish_draft:
-        description: Create a GitHub draft release after both packages pass.
+        description: Create a GitHub draft release after all platform packages pass.
         required: false
         type: boolean
         default: false
@@ -164,9 +164,31 @@ jobs:
             dist/*.deb.sha256
           if-no-files-found: error
 
+  windows:
+    needs: validate-wheel
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Build and validate Windows package
+        shell: pwsh
+        run: ./packaging/windows/build.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: voicetyping-windows
+          path: |
+            dist/VoiceTyping-windows-x64.zip
+            dist/SHA256SUMS.txt
+            dist/SELFTEST.json
+          if-no-files-found: error
+
   draft-release:
     if: ${{ inputs.publish_draft == true }}
-    needs: [appimage, deb]
+    needs: [appimage, deb, windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

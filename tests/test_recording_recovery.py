@@ -36,7 +36,8 @@ class RecoveryStoreTests(unittest.TestCase):
             spool = store.start_spool()
             spool.offer(b"\x01\x00" * 1600)
             raw = spool.finish()
-            pending = store.recover_incomplete_spools()
+            with mock.patch.object(store, "_pid_is_alive", return_value=False):
+                pending = store.recover_incomplete_spools()
             self.assertFalse(raw.exists())
             self.assertEqual(len(pending), 1)
             self.assertEqual(os.stat(store.root).st_mode & 0o777, 0o700)
@@ -51,7 +52,8 @@ class RecoveryStoreTests(unittest.TestCase):
             spool = store.start_spool(48000)
             spool.offer(b"\x01\x00" * 4800)
             spool.finish()
-            pending = store.recover_incomplete_spools()[0]
+            with mock.patch.object(store, "_pid_is_alive", return_value=False):
+                pending = store.recover_incomplete_spools()[0]
             with wave.open(str(pending), "rb") as audio:
                 self.assertEqual(audio.getframerate(), 48000)
 

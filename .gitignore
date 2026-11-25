@@ -19,6 +19,7 @@ pip-delete-this-directory.txt
 
 # Audio files
 *.wav
+!packaging/windows/gemini-smoke.wav
 *.mp3
 *.flac
 *.ogg
