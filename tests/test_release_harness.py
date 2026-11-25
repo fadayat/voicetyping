@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ReleaseHarnessTests(unittest.TestCase):
     def test_package_version_comes_from_canonical_module(self):
-        self.assertEqual(release_harness.read_package_version(), "2.3.0")
+        self.assertEqual(release_harness.read_package_version(), "2.3.1")
 
     def test_module_manifest_covers_every_package_module(self):
         expected = {

@@ -392,7 +392,7 @@ class ConfigTests(unittest.TestCase):
         ) as print_message:
             self.assertEqual(vt.main(["--version"]), 0)
         acquire.assert_not_called()
-        print_message.assert_called_once_with("VoiceTyping 2.3.0")
+        print_message.assert_called_once_with("VoiceTyping 2.3.1")
 
     def test_tray_recording_action_queues_toggle_without_blocking_tray(self):
         actions = {}
