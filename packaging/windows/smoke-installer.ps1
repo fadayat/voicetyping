@@ -211,17 +211,25 @@ finally:
         throw "Silent uninstall failed with exit code $uninstallCode."
     }
 
-    if (Test-Path $runKeyPath) {
-        $remainingRun = Get-ItemProperty -Path $runKeyPath -Name $runValueName -ErrorAction SilentlyContinue
-        if ($null -ne $remainingRun) {
-            throw "Uninstall did not remove app-owned Run value: $($remainingRun.$runValueName)"
+    # Inno Setup's uninstaller spawns a temporary Stage-2 process so it can delete
+    # unins000.exe and run usPostUninstall asynchronously after Stage-1 exits.
+    $uninstallDeadline = (Get-Date).AddSeconds(20)
+    $remainingRun = $null
+    while ((Get-Date) -lt $uninstallDeadline) {
+        $dirExists = Test-Path $installDir
+        $remainingRun = if (Test-Path $runKeyPath) {
+            Get-ItemProperty -Path $runKeyPath -Name $runValueName -ErrorAction SilentlyContinue
+        } else {
+            $null
         }
+        if (-not $dirExists -and $null -eq $remainingRun) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
     }
 
-    # Inno Setup's uninstaller cleans up its own directory asynchronously right after exit.
-    $dirDeadline = (Get-Date).AddSeconds(20)
-    while ((Test-Path $installDir) -and ((Get-Date) -lt $dirDeadline)) {
-        Start-Sleep -Milliseconds 100
+    if ($null -ne $remainingRun) {
+        throw "Uninstall did not remove app-owned Run value: $($remainingRun.$runValueName)"
     }
     if (Test-Path $installDir) {
         throw "Installation directory still exists after uninstall: $installDir"
