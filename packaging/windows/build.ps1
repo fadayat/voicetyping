@@ -15,12 +15,13 @@ if (-not (Test-Path .venv\Scripts\python.exe)) {
 }
 Run-Python -c "import struct, sys; assert sys.version_info[:2] == (3, 12) and struct.calcsize('P') == 8, 'Python 3.12 x64 is required'"
 if (-not $SkipInstall) {
-    Run-Python -m pip install -e '.[windows]' 'pyinstaller>=6.11,<7'
+    Run-Python -m pip install '.[windows]' 'pyinstaller>=6.11,<7'
 }
 
 Run-Python -m unittest discover -s tests/windows -v
-Run-Python -m compileall -q src\voicetyping\windows packaging\windows
+Run-Python -m compileall -q src\voicetyping packaging\windows
 Run-Python -m PyInstaller --noconfirm --clean --windowed --onedir --name VoiceTyping `
+    --paths src `
     --collect-all sounddevice --collect-all soundfile `
     --hidden-import keyring.backends.Windows --hidden-import pystray._win32 `
     packaging\windows\launcher.py
@@ -30,7 +31,12 @@ if (Test-Path $selfTestReport) { Remove-Item $selfTestReport -Force }
 $executable = (Resolve-Path 'dist\VoiceTyping\VoiceTyping.exe').Path
 $selfTestProcess = Start-Process -FilePath $executable `
     -ArgumentList @('--self-test', '--report', $selfTestReport) `
-    -WorkingDirectory $repoRoot -Wait -PassThru
+    -WorkingDirectory $repoRoot -PassThru
+if (-not $selfTestProcess.WaitForExit(60000)) {
+    Stop-Process -Id $selfTestProcess.Id -Force -ErrorAction SilentlyContinue
+    throw 'Packaged self-test timed out after 60 seconds.'
+}
+$selfTestProcess.WaitForExit()
 if ($selfTestProcess.ExitCode -ne 0) { throw "Packaged self-test failed ($($selfTestProcess.ExitCode))." }
 if (-not (Test-Path $selfTestReport)) { throw 'Packaged self-test did not create dist\SELFTEST.json.' }
 if ((Get-Content $selfTestReport -Raw | ConvertFrom-Json).success -ne $true) {
@@ -43,7 +49,12 @@ if ($env:GEMINI_API_KEY) {
     try {
         $geminiProcess = Start-Process -FilePath $executable `
             -ArgumentList @('--gemini-smoke', '--audio', 'packaging\windows\gemini-smoke.wav', '--report', $geminiSmokeReport) `
-            -WorkingDirectory $repoRoot -Wait -PassThru
+            -WorkingDirectory $repoRoot -PassThru
+        if (-not $geminiProcess.WaitForExit(60000)) {
+            Stop-Process -Id $geminiProcess.Id -Force -ErrorAction SilentlyContinue
+            throw 'Packaged Gemini smoke test timed out after 60 seconds.'
+        }
+        $geminiProcess.WaitForExit()
     } finally {
         Remove-Item Env:GEMINI_API_KEY -ErrorAction SilentlyContinue
     }
