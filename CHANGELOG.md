@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.3.2
+
+### Added
+
+- Per-user Windows x64 Inno Setup installer
+  (`VoiceTyping-2.3.2-windows-x64-setup.exe`) alongside the portable
+  `VoiceTyping-windows-x64.zip` archive, with `SHA256SUMS.txt` covering both
+  artifacts and automated CI install/upgrade/mutex/uninstall verification.
+
 ## 2.3.1
 
 ### Added

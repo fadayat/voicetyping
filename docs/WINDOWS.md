@@ -4,13 +4,31 @@ The Windows edition is part of the VoiceTyping repository. It uses the shared
 recording and Gemini transcription engine with Windows-specific desktop
 integration. Windows 10/11 x64 is the initial target.
 
-## Run the packaged app
+## Install or run the packaged app
 
-Download the Windows ZIP from a project release, verify `SHA256SUMS.txt`, and
-extract the complete `VoiceTyping` folder. Run `VoiceTyping.exe` from that
-folder; do not move the executable by itself. Enter your own Gemini API key in
-the app. It is stored in Windows Credential Manager. Non-secret settings and
-failed-recording recovery audio are kept under `%LOCALAPPDATA%\VoiceTyping`.
+Two Windows x64 distributions are built for each release, and both hashes are
+listed in `SHA256SUMS.txt`:
+
+1. **Per-user installer (`VoiceTyping-<version>-windows-x64-setup.exe`,
+   recommended):** Installs without administrator privileges into
+   `%LOCALAPPDATA%\Programs\VoiceTyping` and adds Start Menu entries (plus an
+   optional desktop shortcut). Upgrades preserve your existing settings,
+   Credential Manager API key, recovery folder, and startup preference.
+   Uninstalling removes only a startup `Run` entry that points to the
+   installed executable; user settings, credentials, and recovery audio are
+   preserved. Silent installation supports `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`
+   (and optional `/DIR=...`).
+2. **Portable archive (`VoiceTyping-windows-x64.zip`):** Extract the complete
+   `VoiceTyping` folder and run `VoiceTyping.exe` from that folder; do not move
+   the executable by itself.
+
+In both editions, enter your own Gemini API key in the app; it is stored in
+Windows Credential Manager. Non-secret settings and failed-recording recovery
+audio are kept under `%LOCALAPPDATA%\VoiceTyping`.
+
+Close any running VoiceTyping instance before upgrading or uninstalling; the
+installer checks the `Local\VoiceTyping.Windows.v1` mutex so files are not
+replaced while the app is running.
 
 F8 starts and stops recording by default. The shortcut can be changed in the
 app. The completed transcript is copied to the clipboard. Automatic paste is
@@ -44,14 +62,18 @@ root, run:
 ```
 
 The script installs the project Windows extra, runs `tests/windows`, compiles
-the Windows package, builds an onedir GUI executable with PyInstaller, and
-runs its self-test. It writes the distributable ZIP, SHA-256 manifest and
-non-sensitive JSON evidence under `dist/`. A real Gemini batch smoke test is
-also run when the build process has a key. These checks do not exercise a
-physical microphone, Gemini Live streaming, or interactive pasting into other
-applications; complete those checks on a normal Windows desktop before public
-distribution.
+the Windows package, builds an onedir GUI executable with PyInstaller, runs its
+self-test, creates the portable ZIP (`dist/VoiceTyping-windows-x64.zip`),
+compiles the Inno Setup installer (`dist/VoiceTyping-<version>-windows-x64-setup.exe`,
+unless `-SkipInstaller` is passed), and writes `dist/SHA256SUMS.txt` plus
+non-sensitive JSON evidence under `dist/`. Pass `-SmokeTestInstaller` to run
+the automated silent install, mutex-guard, upgrade, and uninstall checks. A real
+Gemini batch smoke test is also run when the build process has a key. These
+checks do not exercise a physical microphone, Gemini Live streaming, or
+interactive pasting into other applications; complete those checks on a normal
+Windows desktop before public distribution.
 
 Third-party license files and resolved dependency versions are bundled for
-review. The app is unsigned, so Windows SmartScreen may show a reputation
-warning. Review bundled notices and redistribution terms before publishing.
+review. Both the installer and app executables are unsigned, so Windows
+SmartScreen may show a reputation warning ("More info" -> "Run anyway"). Review
+bundled notices and redistribution terms before publishing.
